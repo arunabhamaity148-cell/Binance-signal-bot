@@ -541,15 +541,18 @@ class SignalBot:
 
     def _hourly_runtime_state(self) -> dict:
         cache=self.cache
-        active=0; lags=[]; movers=[]; ws_status="disconnected"
+        active=0; movers=[]; ws_status="disconnected"; last_message_ts_ms=None
         if cache is not None:
             active=sum(1 for symbol in self.symbols if cache.is_snapshot_ready(symbol))
-            ws_status="connected" if bool(getattr(getattr(cache, "ws", None), "is_connected", False)) else "disconnected"
+            ws=getattr(cache, "ws", None)
+            ws_status="connected" if bool(getattr(ws, "is_connected", False)) else "disconnected"
+            last_message_ts_ms=getattr(ws, "last_message_ts_ms", None)
+            if last_message_ts_ms is None:
+                timestamps=getattr(ws, "_last_message_ts_ms", {})
+                if isinstance(timestamps, dict):
+                    last_message_ts_ms=max(timestamps.values(), default=None)
             for symbol in self.symbols:
                 try:
-                    ages=cache.diagnostic_ages_ms(symbol, now_ms())
-                    values=[value for value in ages.values() if isinstance(value, (int, float))]
-                    if values: lags.append(max(values))
                     ticker=cache.data.get(symbol, {}).get("ticker")
                     if ticker is not None:
                         movers.append((symbol, (ticker.best_bid + ticker.best_ask) / 2.0, None))
@@ -559,7 +562,8 @@ class SignalBot:
         by_symbol={item[0]: item for item in movers}
         top=[by_symbol[symbol] for symbol in preferred if symbol in by_symbol]
         return {"active_symbols": active, "top_movers": top, "last_event": "No new events",
-                "ws_status": ws_status, "feed_lag_ms": max(lags) if lags else None,
+                "ws_status": ws_status, "last_message_ts_ms": last_message_ts_ms,
+                "feed_lag_ms": None if last_message_ts_ms is None else max(0, now_ms()-int(last_message_ts_ms)),
                 "uptime_seconds": time.monotonic()-self._boot_started_monotonic,
                 "status": "running", "pair_status": {symbol: "ready" if symbol in by_symbol else "warming" for symbol in self.symbols}}
 

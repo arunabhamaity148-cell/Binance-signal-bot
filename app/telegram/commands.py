@@ -56,7 +56,33 @@ async def handle_help(ctx: CommandContext) -> str:
 async def handle_status(ctx: CommandContext) -> str:
     state = _state(ctx)
     uptime = max(0, int(time.monotonic() - ctx.started_monotonic)) if ctx.started_monotonic else 0
-    return _frame("📡 BOT STATUS", [f"🟢 State: {state.get('status', 'running')}", f"🔌 WS: {state.get('ws_status', 'unknown')}", f"📊 Symbols: {len(ctx.config.enabled_symbols())}", f"⏱️ Uptime: {uptime // 3600}h {(uptime % 3600) // 60}m", f"🐢 Feed lag: {state.get('feed_lag_ms', 'unknown')}ms"], "ID: CMD-STATUS")
+    last_message_ts_ms=state.get("last_message_ts_ms")
+    ws=state.get("ws")
+    if last_message_ts_ms is None and ws is not None:
+        last_message_ts_ms=getattr(ws, "last_message_ts_ms", None)
+        if last_message_ts_ms is None:
+            timestamps=getattr(ws, "_last_message_ts_ms", {})
+            if isinstance(timestamps, dict):
+                last_message_ts_ms=max(timestamps.values(), default=None)
+    feed_lag=format_feed_lag(last_message_ts_ms)
+    return _frame("📡 BOT STATUS", [f"🟢 State: {state.get('status', 'running')}", f"🔌 WS: {state.get('ws_status', 'unknown')}", f"📊 Symbols: {len(ctx.config.enabled_symbols())}", f"⏱️ Uptime: {uptime // 3600}h {(uptime % 3600) // 60}m", f"🐢 Feed lag: {feed_lag}"], "ID: CMD-STATUS")
+
+
+def format_feed_lag(last_message_ts_ms: int | None, *, now_ts_ms: int | None = None) -> str:
+    """Format age of the latest WS receipt; never use event or historical-series age."""
+    if last_message_ts_ms is None:
+        return "⚪ N/A"
+    from app.core.time_utils import now_ms
+    try:
+        lag_ms=max(0, (now_ms() if now_ts_ms is None else int(now_ts_ms))-int(last_message_ts_ms))
+    except (TypeError, ValueError):
+        return "⚪ N/A"
+    if lag_ms < 1000:
+        return f"🟢 {lag_ms}ms"
+    seconds=lag_ms/1000.0
+    if lag_ms <= 5000:
+        return f"🟡 {seconds:.1f}s"
+    return f"🔴 {seconds:.1f}s"
 
 
 async def handle_signals(ctx: CommandContext) -> str:
@@ -93,10 +119,24 @@ async def handle_strategies(ctx: CommandContext) -> str:
 
 
 async def handle_vetoes(ctx: CommandContext) -> str:
-    descriptions = {
-        1: "Data Integrity", 2: "Feed Health", 3: "Depth", 4: "Spread", 5: "OI", 6: "Funding", 7: "News", 8: "Volatility", 9: "Correlation", 10: "Cooldown", 11: "Risk Limits", 12: "Session", 13: "Liquidity", 14: "Duplicate", 15: "Final Safety",
-    }
-    body = ["🛡️ VETO GUARD GUIDE"] + [f"🚫 G{i} — {descriptions[i]}" for i in range(1, 16)]
+    descriptions = [
+        ("Data Integrity", "Missing, stale, out-of-order, or malformed data."),
+        ("Feed Health", "WebSocket disconnect or feed gap > 10s."),
+        ("Depth Collapse", "Order-book liquidity too thin."),
+        ("Spread Explosion", "Bid-ask spread too wide."),
+        ("OI Anomaly", "OI spike/crash > 8% in 5m."),
+        ("Funding Extreme", "|funding z| > 3.5."),
+        ("News Shock", "Tier-1 HIGH/CRITICAL event."),
+        ("Volatility Flash", "Bar range > 4x ATR."),
+        ("BTC Regime", "BTC trend against signal."),
+        ("Orderbook Instability", "Crossed, empty, or one-sided book."),
+        ("Execution Quality", "Estimated slippage too high."),
+        ("Self-Consistency", "Strategy output mismatch."),
+        ("OI Divergence", "Price and OI move opposite."),
+        ("OI Stagnation", "Flat OI plus strong price move."),
+        ("OI Percentile Extreme", "OI above 95th or below 5th percentile."),
+    ]
+    body = ["🛡️ VETO GUARD GUIDE"] + [f"🚫 G{i} — {name}: {explanation}" for i, (name, explanation) in enumerate(descriptions, 1)]
     return _frame("🛡️ VETOES", body, "ID: CMD-VETOES")
 
 

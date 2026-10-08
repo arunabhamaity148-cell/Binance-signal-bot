@@ -118,6 +118,11 @@ class BinanceWebSocketClient:
         """Cumulative disconnect/reconnect attempts since this client started."""
         return self._reconnect_count_total
 
+    @property
+    def last_message_ts_ms(self) -> int | None:
+        """Wall-clock timestamp of the most recently received WS message."""
+        return max(self._last_message_ts_ms.values(), default=None)
+
     def _log_no_rehydrate(self) -> None:
         symbols=sorted({stream.split("@",1)[0].upper() for stream in self._streams})
         now_ms=int(time.time()*1000)
