@@ -1,0 +1,11 @@
+services:
+  config-check:
+    build: .
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    command: ["python", "scripts/validate_config.py"]
