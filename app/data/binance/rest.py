@@ -165,8 +165,22 @@ class BinanceRestClient:
     async def premium_index(self, symbol: str) -> dict:
         return await self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
 
-    async def funding_rate(self, symbol: str, limit: int = 100) -> list[RawFundingRate]:
-        rows = await self._get("/fapi/v1/fundingRate", {"symbol": symbol, "limit": limit})
+    @staticmethod
+    def _history_params(
+        symbol: str, limit: int, start_time_ms: int | None, end_time_ms: int | None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"symbol": symbol, "limit": limit}
+        if start_time_ms is not None:
+            params["startTime"] = int(start_time_ms)
+        if end_time_ms is not None:
+            params["endTime"] = int(end_time_ms)
+        return params
+
+    async def funding_rate(
+        self, symbol: str, limit: int = 100, *,
+        start_time_ms: int | None = None, end_time_ms: int | None = None,
+    ) -> list[RawFundingRate]:
+        rows = await self._get("/fapi/v1/fundingRate", self._history_params(symbol, limit, start_time_ms, end_time_ms))
         return [RawFundingRate.from_rest_row(r) for r in rows]
 
     async def open_interest(self, symbol: str) -> RawOpenInterest:
@@ -174,11 +188,12 @@ class BinanceRestClient:
         return RawOpenInterest.from_rest_current(row)
 
     async def open_interest_hist(
-        self, symbol: str, period: str, limit: int = 30
+        self, symbol: str, period: str, limit: int = 30, *,
+        start_time_ms: int | None = None, end_time_ms: int | None = None,
     ) -> list[RawOpenInterest]:
         rows = await self._get(
             "/futures/data/openInterestHist",
-            {"symbol": symbol, "period": period, "limit": limit},
+            {**self._history_params(symbol, limit, start_time_ms, end_time_ms), "period": period},
         )
         return [RawOpenInterest.from_rest_row_hist(r) for r in rows]
 
@@ -201,19 +216,21 @@ class BinanceRestClient:
         return [RawLongShortRatio.from_rest_row(r) for r in rows]
 
     async def global_long_short_account_ratio(
-        self, symbol: str, period: str, limit: int = 30
+        self, symbol: str, period: str, limit: int = 30, *,
+        start_time_ms: int | None = None, end_time_ms: int | None = None,
     ) -> list[RawLongShortRatio]:
         rows = await self._get(
             "/futures/data/globalLongShortAccountRatio",
-            {"symbol": symbol, "period": period, "limit": limit},
+            {**self._history_params(symbol, limit, start_time_ms, end_time_ms), "period": period},
         )
         return [RawLongShortRatio.from_rest_row(r) for r in rows]
 
     async def taker_long_short_ratio(
-        self, symbol: str, period: str, limit: int = 30
+        self, symbol: str, period: str, limit: int = 30, *,
+        start_time_ms: int | None = None, end_time_ms: int | None = None,
     ) -> list[RawLongShortRatio]:
         rows = await self._get(
             "/futures/data/takerlongshortRatio",
-            {"symbol": symbol, "period": period, "limit": limit},
+            {**self._history_params(symbol, limit, start_time_ms, end_time_ms), "period": period},
         )
         return [RawLongShortRatio.from_rest_row(r) for r in rows]

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 
 from app.backtest.engine import generate_candidates_at_snapshot, grade_candidates
@@ -17,7 +18,8 @@ from app.data.binance.models import (RawAggTrade, RawBookTicker, RawDepthSnapsho
 from app.data.binance.rest import BinanceRestClient, RestClientConfig
 from app.data.binance.websocket import BinanceWebSocketClient, WebSocketClientConfig
 from app.data.derivatives import POLL_INTERVAL_LIVE_OI_S, build_derivatives_state, merge_live_oi_into_5m_series
-from app.data.normalization import merge_kline_series, normalize_kline_series, open_interest_to_timestamped
+from app.data.normalization import (funding_rate_to_timestamped, long_short_ratio_to_timestamped,
+    merge_kline_series, normalize_kline_series, open_interest_to_timestamped)
 from app.data.orderbook import depth_and_ticker_to_orderbook_state
 from app.data.snapshot import SnapshotInputs, build_snapshot
 from app.news.collectors import NewsCollector, build_retry_config, build_source_configs
@@ -34,6 +36,25 @@ from app.database.repository import SignalRepository
 logger = get_logger(__name__)
 _STOP = object()
 _TIMEFRAMES = ("5m", "15m", "1h", "4h", "1d")
+DERIVATIVES_REFRESH_INTERVAL_S = 15 * 60  # class E; operator-approved default
+DERIVATIVES_HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000
+
+
+def _merge_timestamped_history(existing, raw_rows, converter, received_ts_ms, start_time_ms, end_time_ms):
+    """Merge one endpoint's rows by event timestamp; replays are idempotent.
+
+    Older points are retained because S3/S5 use the 1d OI history for a
+    multi-day percentile window; the API request itself is bounded to 24h.
+    """
+    by_event = {point.event_ts_ms: point for point in existing}
+    for raw in raw_rows:
+        point = converter(raw, received_ts_ms)
+        if not start_time_ms <= point.event_ts_ms <= end_time_ms:
+            continue
+        old = by_event.get(point.event_ts_ms)
+        if old is None or point.received_ts_ms >= old.received_ts_ms:
+            by_event[point.event_ts_ms] = point
+    return [by_event[stamp] for stamp in sorted(by_event)]
 
 
 def _depth_from_rest(symbol: str, payload: dict, received: int) -> RawDepthSnapshot:
@@ -108,6 +129,53 @@ class LiveSnapshotCache:
                     c["derivatives"]=type(d)(d.symbol,d.funding_rate_history,series,d.open_interest_history_15m,d.open_interest_history_1h,
                         d.open_interest_history_1d,d.long_short_account_ratio_history,d.taker_long_short_ratio_history,d.premium_index_current)
 
+    async def refresh_historical_derivatives(self, *, as_of_ts_ms: int | None = None):
+        """Refresh four OI periods, funding, global-account and taker ratios per symbol.
+
+        Each request asks for the prior 24 hours. Results are merged into the
+        existing history by endpoint/symbol/event timestamp, preserving older
+        percentile history and leaving a failed endpoint's cache unchanged.
+        """
+        if not self.data:
+            return
+        as_of = now_ms() if as_of_ts_ms is None else int(as_of_ts_ms)
+        start = as_of - DERIVATIVES_HISTORY_WINDOW_MS
+        for symbol, cache in self.data.items():
+            requests = [
+                ("fundingRate", "funding_rate_history", self.rest.funding_rate(
+                    symbol, limit=500, start_time_ms=start, end_time_ms=as_of), funding_rate_to_timestamped),
+                ("openInterestHist:5m", "open_interest_history_5m", self.rest.open_interest_hist(
+                    symbol, "5m", limit=500, start_time_ms=start, end_time_ms=as_of), open_interest_to_timestamped),
+                ("openInterestHist:15m", "open_interest_history_15m", self.rest.open_interest_hist(
+                    symbol, "15m", limit=500, start_time_ms=start, end_time_ms=as_of), open_interest_to_timestamped),
+                ("openInterestHist:1h", "open_interest_history_1h", self.rest.open_interest_hist(
+                    symbol, "1h", limit=100, start_time_ms=start, end_time_ms=as_of), open_interest_to_timestamped),
+                ("openInterestHist:1d", "open_interest_history_1d", self.rest.open_interest_hist(
+                    symbol, "1d", limit=30, start_time_ms=start, end_time_ms=as_of), open_interest_to_timestamped),
+                ("globalLongShortAccountRatio", "long_short_account_ratio_history", self.rest.global_long_short_account_ratio(
+                    symbol, "5m", limit=500, start_time_ms=start, end_time_ms=as_of), long_short_ratio_to_timestamped),
+                ("takerlongshortRatio", "taker_long_short_ratio_history", self.rest.taker_long_short_ratio(
+                    symbol, "5m", limit=500, start_time_ms=start, end_time_ms=as_of), long_short_ratio_to_timestamped),
+            ]
+            results = await asyncio.gather(*(item[2] for item in requests), return_exceptions=True)
+            derivatives = cache.get("derivatives")
+            if derivatives is None:
+                logger.error("derivatives history refresh skipped; no initialized state", extra={"context": {"symbol": symbol}})
+                continue
+            received = now_ms()
+            updates = {}
+            for (endpoint, field, _request, converter), result in zip(requests, results):
+                if isinstance(result, BaseException):
+                    logger.error("derivatives history endpoint refresh failed", extra={
+                        "context": {"symbol": symbol, "endpoint": endpoint, "error": f"{type(result).__name__}: {result}"}
+                    })
+                    continue
+                updates[field] = _merge_timestamped_history(
+                    getattr(derivatives, field), result, converter, received, start, as_of
+                )
+            if updates:
+                cache["derivatives"] = replace(derivatives, **updates)
+
     async def _consume(self):
         self.ws.set_resync_callback(lambda: asyncio.create_task(self.backfill(list(self.data))))
         async for stream,payload in self.ws.messages():
@@ -167,7 +235,7 @@ class SignalBot:
         self.repo=repository or SignalRepository(Path(cfg.config_dir).parent/cfg.system["database_paths"]["sqlite_path"])
         self.sender=sender; self.telegram_queue=None; self.cache=None; self.symbols=[]
         self.news_engine=None; self.news_collector=None; self.news_sources=[]; self.news_task=None
-        self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None
+        self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock()
 
     async def exchange_info(self):
@@ -244,6 +312,15 @@ class SignalBot:
             try: await asyncio.wait_for(self.stop_event.wait(),timeout=POLL_INTERVAL_LIVE_OI_S)
             except asyncio.TimeoutError: pass
 
+    async def _refresh_derivatives_history_loop(self, interval_s: float = DERIVATIVES_REFRESH_INTERVAL_S):
+        while not self.stop_event.is_set():
+            try:
+                await self.cache.refresh_historical_derivatives()
+            except Exception:
+                logger.exception("historical derivatives refresh cycle failed")
+            try: await asyncio.wait_for(self.stop_event.wait(), timeout=interval_s)
+            except asyncio.TimeoutError: pass
+
     async def _risk_state(self,snapshot):
         active=await self.repo.get_open_signals()
         active=[row for row in active if row.expiry_ts_ms>snapshot.as_of_ts_ms]
@@ -304,6 +381,7 @@ class SignalBot:
         self.stop_event=stop_event or self.stop_event or asyncio.Event()
         self.outbox_task=asyncio.create_task(self._publisher_loop(),name="telegram-outbox")
         self.oi_task=asyncio.create_task(self._refresh_oi_loop(),name="live-oi-poller")
+        self.derivatives_task=asyncio.create_task(self._refresh_derivatives_history_loop(),name="historical-derivatives-refresh")
         interval=float(os.getenv("SIGNAL_EVALUATION_INTERVAL_S","300"))
         while not self.stop_event.is_set():
             if self.cache.ws_task.done(): raise RuntimeError("market WebSocket consumer stopped")
@@ -320,9 +398,9 @@ class SignalBot:
             if self._closed: return
             self._closed=True
             if self.stop_event: self.stop_event.set()
-            for task in (self.news_task,self.oi_task,self.cache.ws_task if self.cache else None):
+            for task in (self.news_task,self.oi_task,self.derivatives_task,self.cache.ws_task if self.cache else None):
                 if task and not task.done(): task.cancel()
-            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
+            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
             if self.outbox_task and not self.outbox_task.done():
                 await self.outbox.join(); self.outbox.put_nowait(_STOP); await self.outbox.join(); await self.outbox_task
             for obj in (self.news_collector,self.sender,self.repo,self.rest):
