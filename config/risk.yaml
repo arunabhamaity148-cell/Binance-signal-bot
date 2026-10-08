@@ -37,7 +37,7 @@ correlated_clusters:                    # class: C, for exposure capping
 symbol_tiers:                           # shared reference for veto.yaml
   majors: [BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT]
   mid_caps: [XRPUSDT, DOGEUSDT, ADAUSDT, AVAXUSDT, LINKUSDT, BCHUSDT, LTCUSDT, DOTUSDT, TRXUSDT]
-  small_caps: [SUIUSDT, APTUSDT, ARBUSDT, OPUSDT, TONUSDT, NEARUSDT, ATOMUSDT]
+  small_caps: [SUIUSDT, APTUSDT, ARBUSDT, OPUSDT, ZECUSDT, NEARUSDT, ATOMUSDT]
 
 # NOTE: no reference_equity_usdt key here - equity comes exclusively
 # from the ASSUMED_ACCOUNT_EQUITY_USD environment variable per spec

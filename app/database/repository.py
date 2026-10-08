@@ -379,6 +379,56 @@ class SignalRepository:
                 "vetoes_by_guard": vetoes_by_guard, "errors_by_severity": errors_by_severity,
                 "outcomes_today": today, "cumulative_outcomes": cumulative}
 
+    async def get_hourly_summary_data(self, *, start_ts_ms: int, end_ts_ms: int,
+                                      now_ts_ms: int | None = None) -> dict:
+        """Read-only aggregates for the hourly operator summary."""
+        conn = self._require_conn()
+        async def grouped(query: str) -> dict[str, int]:
+            async with conn.execute(query, (start_ts_ms, end_ts_ms)) as cursor:
+                return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
+        async with conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE created_ts_ms >= ? AND created_ts_ms < ?",
+            (start_ts_ms, end_ts_ms),
+        ) as cursor:
+            row = await cursor.fetchone()
+        async with conn.execute(
+            "SELECT COUNT(*) FROM runtime_events WHERE event_type='VETO_BLOCK' AND created_ts_ms >= ? AND created_ts_ms < ?",
+            (start_ts_ms, end_ts_ms),
+        ) as cursor:
+            veto_row = await cursor.fetchone()
+        now = now_ms() if now_ts_ms is None else int(now_ts_ms)
+        async with conn.execute(
+            "SELECT grade, COUNT(*) FROM signals WHERE lifecycle_state=? AND expiry_ts_ms>? GROUP BY grade",
+            (SignalLifecycleState.PUBLISHED.value, now),
+        ) as cursor:
+            open_by_grade = {str(item[0]): int(item[1]) for item in await cursor.fetchall()}
+        async with conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE lifecycle_state=? AND expiry_ts_ms>?",
+            (SignalLifecycleState.PUBLISHED.value, now),
+        ) as cursor:
+            open_row = await cursor.fetchone()
+        return {
+            "signals_total": int(row[0] or 0),
+            "signals_by_strategy": await grouped("SELECT strategy_source,COUNT(*) FROM signals WHERE created_ts_ms >= ? AND created_ts_ms < ? GROUP BY strategy_source"),
+            "vetoes_total": int(veto_row[0] or 0),
+            "vetoes_by_guard": await grouped("SELECT guard_name,COUNT(*) FROM runtime_events WHERE event_type='VETO_BLOCK' AND created_ts_ms >= ? AND created_ts_ms < ? GROUP BY guard_name"),
+            "open_signals": int(open_row[0] or 0),
+            "open_by_grade": open_by_grade,
+        }
+
+    async def get_recent_signal_rows(self, *, limit: int = 10) -> list[SignalRow]:
+        conn = self._require_conn()
+        bounded = max(1, min(int(limit), 100))
+        async with conn.execute(
+            "SELECT signal_id, created_ts_ms, symbol, direction, grade, confidence, strategy_source, "
+            "entry_low, entry_high, stop_loss, tp1, tp2, tp3, tp4, rr_tp2, expiry_ts_ms, "
+            "why_lines_json, veto_state, veto_reason, advisory_warning, size_units_advisory, "
+            "notional_usd_advisory, meta_json, lifecycle_state FROM signals "
+            "ORDER BY created_ts_ms DESC, rowid DESC LIMIT ?", (bounded,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._row_to_signal_row(row) for row in rows]
+
     @staticmethod
     def _row_to_signal_row(row) -> SignalRow:
         return SignalRow(

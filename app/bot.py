@@ -39,6 +39,9 @@ from app.telegram.sender import SendOutcome, TelegramCredentials, TelegramSender
 from app.database.repository import SignalRepository
 from app.telegram.error_notifier import ErrorNotifier
 from app.telegram.reports import run_daily_report_loop
+from app.telegram.hourly_summary import run_hourly_summary_loop
+from app.telegram.commands import CommandContext, run_command_polling
+from app.telegram.messages import format_startup_message
 
 logger = get_logger(__name__)
 _STOP = object()
@@ -380,7 +383,7 @@ class SignalBot:
         self.repo=repository or SignalRepository(Path(cfg.config_dir).parent/cfg.system["database_paths"]["sqlite_path"])
         self.sender=sender; self.telegram_queue=None; self.cache=None; self.symbols=[]
         self.news_engine=None; self.news_collector=None; self.news_sources=[]; self.news_task=None
-        self.error_notifier=None; self.report_task=None
+        self.error_notifier=None; self.report_task=None; self.hourly_summary_task=None; self.command_task=None
         self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
         self.delta_client=None; self.delta_products={}; self.delta_task=None
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock()
@@ -514,6 +517,51 @@ class SignalBot:
         self.report_task=asyncio.create_task(run_daily_report_loop(
             self.repo,self.sender,self.cfg.risk["paper_trading_assumptions"],self.stop_event
         ),name="daily-report-2359-ist")
+        self.hourly_summary_task=asyncio.create_task(run_hourly_summary_loop(
+            self.repo, self.sender, tracked_symbols_provider=lambda: len(self.symbols),
+            runtime_state_provider=self._hourly_runtime_state, stop_event=self.stop_event,
+        ), name="hourly-summary-ist")
+        allowed=frozenset(str(value) for value in (chat, os.getenv("TELEGRAM_ERROR_CHAT_ID", "")) if value)
+        if not dry_run and token and allowed:
+            context=CommandContext(
+                repository=self.repo, config=self.cfg, allowed_chat_ids=allowed,
+                state_provider=self._hourly_runtime_state,
+                delta_products_provider=lambda: self.delta_products,
+                started_monotonic=self._boot_started_monotonic,
+            )
+            self.command_task=asyncio.create_task(
+                run_command_polling(token=token, sender=self.sender, context=context,
+                                    stop_event=self.stop_event), name="telegram-command-polling")
+        try:
+            await self.sender.send_text_message(format_startup_message(
+                symbols=self.symbols, delta_available=bool(self.delta_products),
+            ))
+        except Exception as exc:
+            logger.warning("startup Telegram message failed", extra={"context": {"error_type": type(exc).__name__}})
+
+    def _hourly_runtime_state(self) -> dict:
+        cache=self.cache
+        active=0; lags=[]; movers=[]; ws_status="disconnected"
+        if cache is not None:
+            active=sum(1 for symbol in self.symbols if cache.is_snapshot_ready(symbol))
+            ws_status="connected" if bool(getattr(getattr(cache, "ws", None), "is_connected", False)) else "disconnected"
+            for symbol in self.symbols:
+                try:
+                    ages=cache.diagnostic_ages_ms(symbol, now_ms())
+                    values=[value for value in ages.values() if isinstance(value, (int, float))]
+                    if values: lags.append(max(values))
+                    ticker=cache.data.get(symbol, {}).get("ticker")
+                    if ticker is not None:
+                        movers.append((symbol, (ticker.best_bid + ticker.best_ask) / 2.0, None))
+                except Exception:
+                    continue
+        preferred=("BTCUSDT", "ETHUSDT", "SOLUSDT")
+        by_symbol={item[0]: item for item in movers}
+        top=[by_symbol[symbol] for symbol in preferred if symbol in by_symbol]
+        return {"active_symbols": active, "top_movers": top, "last_event": "No new events",
+                "ws_status": ws_status, "feed_lag_ms": max(lags) if lags else None,
+                "uptime_seconds": time.monotonic()-self._boot_started_monotonic,
+                "status": "running", "pair_status": {symbol: "ready" if symbol in by_symbol else "warming" for symbol in self.symbols}}
 
     async def initialize_delta_products(self):
         """Fetch public Delta metadata; failure leaves signals Binance-only."""
@@ -764,9 +812,9 @@ class SignalBot:
             if self._closed: return
             self._closed=True
             if self.stop_event: self.stop_event.set()
-            for task in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.report_task,self.cache.ws_task if self.cache else None):
+            for task in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None):
                 if task and not task.done(): task.cancel()
-            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
+            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
             if self.outbox_task and not self.outbox_task.done():
                 await self.outbox.join(); self.outbox.put_nowait(_STOP); await self.outbox.join(); await self.outbox_task
             if self.error_notifier is not None:

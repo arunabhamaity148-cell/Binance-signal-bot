@@ -142,7 +142,7 @@ pairs:
     qty_step: 0.1
     price_tick: 0.0001
 
-  - symbol: TONUSDT
+  - symbol: ZECUSDT
     enabled: true
     fee_maker_bps: 2.0
     fee_taker_bps: 5.0

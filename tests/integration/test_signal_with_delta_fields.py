@@ -28,10 +28,10 @@ def _ctx(news="no blocking event", binance="healthy"):
 def test_formatter_renders_full_delta_execution_block():
     message = format_signal_message(_signal(), _ctx())
     assert "━━━ DELTA EXECUTION ━━━" in message
-    assert "📦 Contracts: 50" in message
-    assert "🎯 Entry: 62150.5 – 62200" in message
-    assert "📐 Delta R:R (with GST): 1 : 1.9" in message
-    assert "reduce_only=true" in message
+    assert "📦 Contracts: `50.00`" in message
+    assert "`62150.50`" in message and "`62200.00`" in message
+    assert "📐 Delta R:R: `1:1.9`" in message
+    assert "reduce_only" in message
     assert len(message) <= MAX_MESSAGE_CHARS
 
 

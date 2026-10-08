@@ -50,6 +50,9 @@ class _ErrorRecord:
 def format_error_notification(item: _ErrorRecord) -> str:
     when = datetime.fromtimestamp(item.created_ts_ms / 1000, timezone.utc).astimezone(IST)
     return (
+        "╔═══════════════════════════════════╗\n"
+        "║  🚨 SYSTEM ERROR · SIGNAL BOT      ║\n"
+        "╚═══════════════════════════════════╝\n"
         f"🚨 ERROR | {when:%Y-%m-%d %H:%M:%S} IST\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📍 Source: {item.source}\n"

@@ -43,7 +43,7 @@ _TRACKED_BASE_ASSETS: dict[str, str] = {
     "APT": "APTUSDT", "APTOS": "APTUSDT",
     "ARB": "ARBUSDT", "ARBITRUM": "ARBUSDT",
     "OP": "OPUSDT", "OPTIMISM": "OPUSDT",
-    "TON": "TONUSDT",
+    "ZEC": "ZECUSDT",
     "NEAR": "NEARUSDT",
     "ATOM": "ATOMUSDT", "COSMOS": "ATOMUSDT",
 }

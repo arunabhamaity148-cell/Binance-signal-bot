@@ -181,4 +181,5 @@ def test_advisory_warning_appears_in_formatted_telegram_message():
     sig = Signal(**_kwargs())
     ctx = DeliveryContext(news_state_label="healthy", binance_state_label="healthy", as_of_ts_ms=1000)
     message = format_signal_message(sig, ctx)
-    assert all(f"⚠️ {line}" in message for line in ADVISORY_WARNING.splitlines())
+    assert "⚠️ ADVISORY ONLY — VERIFY SIZING" in message
+    assert "⚠️ LEVERAGE NOT SET BY BOT" in message

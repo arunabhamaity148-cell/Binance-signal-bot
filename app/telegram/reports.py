@@ -68,6 +68,10 @@ def format_daily_report(report_date: date, data: dict, assumptions: dict) -> str
     else:
         win_rate, avg_r = "N/A", "N/A"
     lines = [
+        "╔═══════════════════════════════════╗",
+        f"║  📊 DAILY PAPER REPORT · {report_date:%Y-%m-%d} ║",
+        "╚═══════════════════════════════════╝",
+        "",
         f"📊 DAILY REPORT — {report_date:%Y-%m-%d} (IST)",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"📈 Signals emitted: {data['signals_total']}",
@@ -98,6 +102,7 @@ def format_daily_report(report_date: date, data: dict, assumptions: dict) -> str
         f"   └ Profit factor: {_profit_factor(cumulative)}",
         f"⚠️ Assumptions: ₹{int(assumptions['account_capital_inr'])} capital, ₹{risk_inr}/trade, {assumptions['assumed_leverage']}x leverage",
         "   (operator-set; bot does not execute)",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"ID: DR-{report_date:%Y%m%d}",
     ])
     return "\n".join(lines)

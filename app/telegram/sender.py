@@ -115,27 +115,28 @@ class TelegramSender:
             )
             return SendResult(outcome=SendOutcome.DELIVERY_FAILED, detail=str(exc))
 
-    async def send_text_message(self, message: str) -> SendResult:
+    async def send_text_message(self, message: str, *, chat_id: str | None = None) -> SendResult:
         """Deliver non-signal text (for example, the scheduled daily report).
 
         Uses the same dry-run mode, per-chat/group queue, retry handling,
         and never-raise delivery contract as signal messages.
         """
         try:
-            await self._deliver(message)
+            await self._deliver(message, chat_id=chat_id)
             return SendResult(outcome=SendOutcome.SENT)
         except Exception as exc:  # noqa: BLE001 - notification failure must not stop the bot
             return SendResult(outcome=SendOutcome.DELIVERY_FAILED, detail=str(exc))
 
-    async def _deliver(self, message: str) -> None:
+    async def _deliver(self, message: str, *, chat_id: str | None = None) -> None:
         if self._credentials.dry_run:
             logger.info("dry-run: would send telegram message", extra={"context": {"chars": len(message)}})
             return
 
-        await self._queue.acquire_send_slot(self._credentials.chat_id)
+        destination = str(chat_id or self._credentials.chat_id)
+        await self._queue.acquire_send_slot(destination)
 
         url = f"{TELEGRAM_API_BASE}/bot{self._credentials.bot_token}/sendMessage"
-        payload = {"chat_id": self._credentials.chat_id, "text": message}
+        payload = {"chat_id": destination, "text": message, "parse_mode": "Markdown"}
 
         attempt = 0
         while True:

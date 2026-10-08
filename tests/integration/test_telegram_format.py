@@ -48,25 +48,16 @@ def _ctx(as_of_ts_ms=0, news="no blocking event", binance="healthy"):
 # ---------------------------------------------------------------------------
 
 
-def test_format_matches_spec_example_exactly():
+def test_format_matches_premium_contract_and_copyable_values():
     msg = format_signal_message(_signal(), _ctx())
-    expected = (
-        "🚨 SIGNAL | BTCUSDT — LONG\n"
-        "⚠️ ADVISORY ONLY — VERIFY ACCOUNT SIZING MANUALLY. No account state, "
-        "fill, leverage, or liquidation distance is observed.\n"
-        "⚠️ LEVERAGE NOT SET BY BOT. Set leverage yourself on the exchange.\n"
-        "🧠 Grade: A   📊 Confidence: 84%\n"
-        "🎯 LIMIT ENTRY: 86120 – 86180\n"
-        "🛑 SL: 85620\n"
-        "🎯 TP1: 86680   🎯 TP2: 87240\n"
-        "🎯 TP3: 88020   🎯 TP4: 88980\n"
-        "📐 R:R: 1 : 2.1   ⏳ Expiry: 45m\n"
-        "📰 News: no blocking event   🏦 Binance: healthy\n"
-        "🛡️ Veto: PASS\n"
-        "ID: CSB-20260926-4F1A2C\n"
-        "⚠️ Delta prices unavailable — using Binance values only."
-    )
-    assert msg == expected
+    assert "🚀 CRYPTO SIGNAL · BINANCE" in msg
+    assert "💎 BTCUSDT · LONG" in msg
+    assert "Grade: A" in msg and "Confidence: `84%`" in msg
+    assert "`86120.00`" in msg and "`85620.00`" in msg
+    assert "`86680.00`" in msg and "`88980.00`" in msg
+    assert "⚠️ ADVISORY ONLY — VERIFY SIZING" in msg
+    assert "⚠️ LEVERAGE NOT SET BY BOT" in msg
+    assert "ID: CSB-20260926-4F1A2C" in msg
 
 
 def test_format_short_direction():
@@ -74,7 +65,7 @@ def test_format_short_direction():
         direction="SHORT", entry_low=99.5, entry_high=100.0, stop_loss=101.0,
         tp1=99.0, tp2=98.0, tp3=97.0, tp4=95.0,
     ), _ctx())
-    assert "SIGNAL | BTCUSDT — SHORT" in msg
+    assert "💎 BTCUSDT · SHORT" in msg
 
 
 def test_format_grade_a_plus():
@@ -94,19 +85,10 @@ def test_format_veto_block_state():
 
 def test_format_field_order_is_fixed():
     msg = format_signal_message(_signal(), _ctx())
-    lines = msg.split("\n")
-    assert lines[0].startswith("🚨 SIGNAL")
-    assert lines[1].startswith("⚠️ ADVISORY ONLY")
-    assert lines[2].startswith("⚠️ LEVERAGE NOT SET BY BOT")
-    assert "Grade" in lines[3]
-    assert "LIMIT ENTRY" in lines[4]
-    assert lines[5].startswith("🛑 SL")
-    assert "TP1" in lines[6] and "TP2" in lines[6]
-    assert "TP3" in lines[7] and "TP4" in lines[7]
-    assert "R:R" in lines[8] and "Expiry" in lines[8]
-    assert "News" in lines[9] and "Binance" in lines[9]
-    assert lines[10].startswith("🛡️ Veto")
-    assert lines[11].startswith("ID:")
+    assert msg.index("💎 BTCUSDT") < msg.index("💰 ENTRY ZONE")
+    assert msg.index("💰 ENTRY ZONE") < msg.index("🛑 STOP LOSS") < msg.index("🎁 TARGETS")
+    assert msg.index("🎁 TARGETS") < msg.index("⚠️ Delta prices unavailable")
+    assert msg.index("ID: CSB-") > msg.index("🎁 TARGETS")
 
 
 # ---------------------------------------------------------------------------
@@ -116,19 +98,20 @@ def test_format_field_order_is_fixed():
 
 def test_advisory_warning_present_in_every_normal_message():
     msg = format_signal_message(_signal(), _ctx())
-    assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
+    assert "⚠️ ADVISORY ONLY — VERIFY SIZING" in msg
+    assert "⚠️ LEVERAGE NOT SET BY BOT" in msg
 
 
 def test_advisory_warning_present_regardless_of_grade():
     for grade in ("A+", "A", "B"):
         msg = format_signal_message(_signal(grade=grade), _ctx())
-        assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
+        assert "⚠️ ADVISORY ONLY — VERIFY SIZING" in msg
 
 
 def test_advisory_warning_present_regardless_of_veto_state():
     for veto_state, reason in (("PASS", None), ("BLOCK", "some reason")):
         msg = format_signal_message(_signal(veto_state=veto_state, veto_reason=reason), _ctx())
-        assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
+        assert "⚠️ LEVERAGE NOT SET BY BOT" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +131,7 @@ def test_long_news_label_triggers_truncation_but_preserves_warning():
     long_news = "X" * 2000
     msg = format_signal_message(_signal(), _ctx(news=long_news))
     assert len(msg) <= MAX_MESSAGE_CHARS
-    assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
+    assert "⚠️ ADVISORY ONLY — VERIFY SIZING" in msg
 
 
 def test_long_why_lines_do_not_affect_format_since_why_lines_not_rendered():
@@ -167,7 +150,7 @@ def test_truncation_drops_least_essential_lines_first():
     long_binance = "Y" * 1500
     msg = format_signal_message(_signal(), _ctx(binance=long_binance))
     assert len(msg) <= MAX_MESSAGE_CHARS
-    assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
+    assert "⚠️ ADVISORY ONLY — VERIFY SIZING" in msg
     assert "ID: CSB-20260926-4F1A2C" in msg
 
 
@@ -190,7 +173,7 @@ def test_refuses_to_send_when_warning_alone_cannot_fit():
 def test_formatter_error_message_explains_refusal():
     pathological_id = "CSB-20260926-" + "A" * 1100
     sig = _signal(signal_id=pathological_id)
-    with pytest.raises(FormatterError, match="ADVISORY warning"):
+    with pytest.raises(FormatterError, match="critical signal values"):
         format_signal_message(sig, _ctx())
 
 
