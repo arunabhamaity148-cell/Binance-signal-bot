@@ -14,6 +14,8 @@ write failure, disk full) as a distinct, expected failure mode.
 from __future__ import annotations
 
 import json
+import math
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -186,6 +188,106 @@ class SignalRepository:
         ) as cursor:
             row = await cursor.fetchone()
         return row[0] if row else 0
+
+    @staticmethod
+    def _utc_day_bounds(ts_ms: int | None = None) -> tuple[int, int]:
+        now = datetime.fromtimestamp((ts_ms if ts_ms is not None else now_ms()) / 1000, timezone.utc)
+        start = datetime.combine(now.date(), datetime_time.min, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+    async def count_active_signals(self, *, now_ts_ms: int | None = None) -> int:
+        """Count unexpired PUBLISHED signals (the schema's PAPER_ACTIVE state)."""
+        now = now_ms() if now_ts_ms is None else int(now_ts_ms)
+        conn = self._require_conn()
+        async with conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE lifecycle_state = ? AND expiry_ts_ms > ?",
+            (SignalLifecycleState.PUBLISHED.value, now),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0] if row else 0)
+
+    async def count_signals_today(self, *, now_ts_ms: int | None = None) -> int:
+        """Count all emitted signals today by created_ts_ms, including PENDING records."""
+        start, end = self._utc_day_bounds(now_ts_ms)
+        conn = self._require_conn()
+        async with conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE created_ts_ms >= ? AND created_ts_ms < ?",
+            (start, end),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0] if row else 0)
+
+    async def count_active_by_cluster(
+        self, cluster_symbols: list[str], *, now_ts_ms: int | None = None
+    ) -> int:
+        """Count unexpired PUBLISHED signals for symbols in a configured cluster."""
+        if not cluster_symbols:
+            return 0
+        now = now_ms() if now_ts_ms is None else int(now_ts_ms)
+        placeholders = ",".join("?" for _ in cluster_symbols)
+        conn = self._require_conn()
+        async with conn.execute(
+            f"SELECT COUNT(*) FROM signals WHERE lifecycle_state = ? AND expiry_ts_ms > ? AND symbol IN ({placeholders})",
+            (SignalLifecycleState.PUBLISHED.value, now, *cluster_symbols),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0] if row else 0)
+
+    async def seconds_since_last_signal(self, symbol: str, *, now_ts_ms: int | None = None) -> float | None:
+        now = now_ms() if now_ts_ms is None else int(now_ts_ms)
+        conn = self._require_conn()
+        async with conn.execute(
+            "SELECT MAX(created_ts_ms) FROM signals WHERE symbol = ?", (symbol,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        return max(0.0, (now - int(row[0])) / 1000.0)
+
+    async def last_signal_direction(self, symbol: str) -> str | None:
+        conn = self._require_conn()
+        async with conn.execute(
+            "SELECT direction FROM signals WHERE symbol = ? ORDER BY created_ts_ms DESC, rowid DESC LIMIT 1",
+            (symbol,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row[0]) if row else None
+
+    async def daily_realized_loss_r(self, *, now_ts_ms: int | None = None) -> float:
+        # This value is derived from operator-recorded outcomes. The system cannot
+        # observe exchange fills or P&L. Returning 0.0 when no outcomes exist is an
+        # explicit assumption: the operator has not recorded any losses yet. This is
+        # consistent with the signal-only architecture — the operator is the source
+        # of truth for realized P&L.
+        start, end = self._utc_day_bounds(now_ts_ms)
+        conn = self._require_conn()
+        async with conn.execute(
+            "SELECT COALESCE(SUM(realized_r), 0.0) FROM outcomes WHERE recorded_ts_ms >= ? AND recorded_ts_ms < ?",
+            (start, end),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return float(row[0] if row else 0.0)
+
+    async def record_outcome(
+        self, signal_id: str, realized_r: float, note: str = "", *,
+        provenance: str = "manual", recorded_ts_ms: int | None = None,
+    ) -> None:
+        """Record the one operator-supplied outcome for a signal; production provenance is manual-only."""
+        if provenance != "manual":
+            raise ValueError("outcome provenance must be 'manual'")
+        if not math.isfinite(float(realized_r)):
+            raise ValueError("realized_r must be finite")
+        conn = self._require_conn()
+        try:
+            await conn.execute(
+                "INSERT INTO outcomes (signal_id, realized_r, recorded_ts_ms, provenance, note) VALUES (?, ?, ?, ?, ?)",
+                (signal_id, float(realized_r), int(recorded_ts_ms if recorded_ts_ms is not None else now_ms()), provenance, str(note)),
+            )
+            await conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            await conn.rollback()
+            raise DatabaseWriteError(f"failed to record manual outcome for {signal_id}: {exc}") from exc
 
     @staticmethod
     def _row_to_signal_row(row) -> SignalRow:

@@ -81,6 +81,20 @@ _MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_candidate_audit_strategy ON candidate_audit(strategy_source);
         """,
     ),
+    (
+        2,
+        """
+        CREATE TABLE IF NOT EXISTS outcomes (
+            signal_id TEXT PRIMARY KEY NOT NULL,
+            realized_r REAL NOT NULL,
+            recorded_ts_ms INTEGER NOT NULL,
+            provenance TEXT NOT NULL CHECK (provenance = 'manual'),
+            note TEXT,
+            FOREIGN KEY (signal_id) REFERENCES signals(signal_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcomes_recorded_ts ON outcomes(recorded_ts_ms);
+        """,
+    ),
 ]
 
 

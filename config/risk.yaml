@@ -8,6 +8,7 @@ partial_exit_fractions: [0.40, 0.30, 0.20, 0.10]   # class: E, per spec section 
 max_concurrent: 5                       # class: E
 max_daily_signals: 12                   # class: E
 max_daily_loss_r: 6.0                   # class: E
+require_manual_outcome_provenance: true # class: E
 cooldown_min: 30                        # class: E, per symbol after a closed/invalidated signal
 
 expiry_per_grade:
