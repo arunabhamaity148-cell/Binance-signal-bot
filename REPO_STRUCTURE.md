@@ -1,6 +1,6 @@
 # Repository structure (verified checkout)
 
-The source snapshot on branch `main` at baseline commit `2e36bf1` had 134 tracked paths before Batch 6; current files below document the baseline and Batch 6 additions; the reproducible package contains 151 files, including tests. `docs/KNOWN_UNCERTAINTIES.md` is the canonical uncertainties record. The supplied handoff claimed 134 files from a Batch 5A archive, but that archive was not available and its digest was not independently verified.
+The source snapshot on branch `main` at baseline commit `2e36bf1` had 134 tracked paths before Batch 6; current files below document the baseline and Batch 6 additions. The reproducible archive contains 151 files, including tests. `FINAL_RELEASE_REPORT.md` is delivered separately and is intentionally excluded from the ZIP to avoid a self-referential checksum. `docs/KNOWN_UNCERTAINTIES.md` is the canonical uncertainties record. The supplied handoff claimed 134 files from a Batch 5A archive, but that archive was not available and its digest was not independently verified.
 
 ```text
 .
