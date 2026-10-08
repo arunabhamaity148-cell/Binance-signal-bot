@@ -31,6 +31,7 @@ from app.core.models import (
     TimestampedValue,
 )
 from app.backtest.engine import BacktestConfig, run_single_symbol_backtest
+import app.backtest.engine as backtest_engine
 
 CFG = load_all()
 P = 100_000.0
@@ -152,18 +153,20 @@ def test_engine_realized_r_is_internally_consistent_with_partial_exit_math():
     assert trade.realized_r < expected_if_exact * 3  # sanity ceiling, not a tight bound
 
 
-def test_engine_produces_no_trade_when_continuation_reverses_immediately():
+def test_engine_produces_no_trade_when_continuation_reverses_immediately(monkeypatch):
     """Negative control: same trigger, but price reverses hard right
     after entry instead of continuing -> should stop out for a loss
     near -1R (accounting for the partial fraction already filled before
     any TP, i.e. the full position stops at -1R since no TP was hit)."""
+    monkeypatch.setattr(backtest_engine, "fill_probability_succeeds", lambda *a, **k: True)
     all_5m, trigger_index, ob, tf, deriv = _build_fixture(
         penetration_atr_mult=0.6, continuation_step=-150.0, continuation_bars=10,
     )
     results = _run(all_5m, ob, tf, deriv)
     assert len(results) == 1
     trade = results[0]
-    assert trade.realized_r == pytest.approx(-1.0, abs=0.05)
+    assert trade.was_filled is True
+    assert -2.0 < trade.realized_r < -1.0  # raw stop loss plus modeled fees/slippage/latency
 
 
 def test_weak_sweep_penetration_correctly_produces_zero_trades_not_a_bug():

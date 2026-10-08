@@ -28,9 +28,13 @@ output).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from bisect import bisect_right
 
-from app.backtest.costs import compute_cost_breakdown, compute_rr_at_tp
-from app.backtest.fills import PartialExitEvent, PositionState, assess_limit_fill, process_bar_for_open_position
+from app.backtest.costs import CostBreakdown, compute_cost_breakdown
+from app.backtest.fills import (
+    PartialExitEvent, PositionState, assess_limit_fill, deterministic_candidate_signal_id,
+    fill_probability_succeeds, process_bar_for_open_position,
+)
 from app.backtest.metrics import TradeResult
 from app.core.models import (
     CandidateSignal,
@@ -201,7 +205,7 @@ def run_single_symbol_backtest(
     regime_fn = bt_cfg.regime_label_fn or _default_regime_label
 
     results: list[TradeResult] = []
-    open_positions: list[tuple[PositionState, CandidateSignal, int]] = []  # (state, candidate, entry_bar_idx)
+    open_positions: list[tuple[PositionState, CandidateSignal, int, CostBreakdown]] = []  # state, candidate, entry bar, signal-time costs
 
     cfg = bt_cfg.app_config
 
@@ -213,11 +217,11 @@ def run_single_symbol_backtest(
         # — see the entry-fill search loop below, which never starts
         # before entry_bar_idx + 1).
         still_open: list[tuple[PositionState, CandidateSignal, int]] = []
-        for pos, cand, entry_idx in open_positions:
+        for pos, cand, entry_idx, cost in open_positions:
             if i > entry_idx:
                 pos = process_bar_for_open_position(pos, bars_5m[i])
             if pos.is_fully_closed:
-                realized_r = _compute_realized_r(pos, cand)
+                realized_r = _compute_realized_r(pos, cand) - _costs_in_r(pos, cost, cand)
                 results.append(
                     TradeResult(
                         symbol=symbol, strategy_source=cand.strategy_source, direction=cand.direction.value,
@@ -228,10 +232,19 @@ def run_single_symbol_backtest(
                     )
                 )
             else:
-                still_open.append((pos, cand, entry_idx))
+                still_open.append((pos, cand, entry_idx, cost))
         open_positions = still_open
 
         index_per_tf = {"5m": i}
+        # For auxiliary timeframes, expose only the most recent bar closed
+        # at or before this 5m evaluation timestamp. Never expose future bars.
+        for timeframe, tf_bars in all_bars.items():
+            if timeframe == "5m":
+                continue
+            timestamps = [tf_bar.close_time_ms for tf_bar in tf_bars]
+            visible_index = bisect_right(timestamps, as_of_ts_ms) - 1
+            if visible_index >= 0:
+                index_per_tf[timeframe] = visible_index
         snapshot = _build_snapshot_at_index(
             symbol=symbol, all_bars=all_bars, index_per_timeframe=index_per_tf,
             as_of_ts_ms=as_of_ts_ms, price_tick=cfg.pair_config(symbol)["price_tick"],
@@ -263,7 +276,7 @@ def run_single_symbol_backtest(
             # Search FORWARD for a fill, starting at the NEXT bar —
             # this is the structural next-bar-fill boundary: index i
             # (the bar that generated this candidate) is never searched.
-            entry_result = _search_forward_for_fill(bars_5m, start_idx=i + 1, candidate=representative, max_search_bars=20)
+            entry_result = _search_forward_for_fill(bars_5m, start_idx=i + 1, candidate=representative, max_search_bars=20, signal_id=deterministic_candidate_signal_id(representative))
             if entry_result is None:
                 results.append(
                     TradeResult(
@@ -276,18 +289,27 @@ def run_single_symbol_backtest(
                 continue
 
             fill_bar_idx, fill_price = entry_result
+            depth_usd = None if snapshot.orderbook is None else min(
+                snapshot.orderbook.bid_depth_5lvl_usd, snapshot.orderbook.ask_depth_5lvl_usd
+            )
+            cost = compute_cost_breakdown(
+                entry_price=fill_price, stop_price=representative.stop_loss,
+                fee_maker_bps=snapshot.fee_maker_bps, fee_taker_bps=snapshot.fee_taker_bps,
+                notional_usd=bt_cfg.assumed_equity_usd, depth_usd=depth_usd,
+                latency_s=bt_cfg.assumed_latency_s,
+            )
             position = PositionState(
                 direction=representative.direction, entry_price=fill_price, stop_loss=representative.stop_loss,
                 tp_levels=(representative.tp1, representative.tp2, representative.tp3, representative.tp4),
                 partial_exit_fractions=tuple(cfg.risk["partial_exit_fractions"]),
             )
-            open_positions.append((position, representative, fill_bar_idx))
+            open_positions.append((position, representative, fill_bar_idx, cost))
 
     return results
 
 
 def _search_forward_for_fill(
-    bars_5m: list, *, start_idx: int, candidate: CandidateSignal, max_search_bars: int
+    bars_5m: list, *, start_idx: int, candidate: CandidateSignal, max_search_bars: int, signal_id: str
 ) -> tuple[int, float] | None:
     """Starting at `start_idx` (NEVER earlier — this is the next-bar-
     fill enforcement point), search up to `max_search_bars` forward for
@@ -300,9 +322,29 @@ def _search_forward_for_fill(
             entry_low=candidate.entry_low, entry_high=candidate.entry_high,
             bar=bars_5m[idx], direction=candidate.direction,
         )
-        if assessment.is_filled:
+        if fill_probability_succeeds(assessment, signal_id=signal_id, bar_timestamp_ms=bars_5m[idx].close_time_ms):
             return idx, assessment.fill_price
     return None
+
+
+def _costs_in_r(position: PositionState, cost: CostBreakdown, candidate: CandidateSignal) -> float:
+    """Convert modeled entry/exit fees, stop slippage and latency impact to R.
+
+    Entry maker fee and human-latency impact apply to the full position.
+    Each TP exit incurs its configured fraction of maker fee; if stopped,
+    the remaining fraction incurs taker fee and stop-leg slippage. Costs
+    are divided by the initial stop distance so TradeResult.realized_r is
+    net of modeled costs. The class-E latency input is passed unchanged
+    from BacktestConfig (default 2.0 seconds).
+    """
+    risk_per_unit = abs(position.entry_price - candidate.stop_loss)
+    if risk_per_unit <= 0:
+        return 0.0
+    charged = cost.entry_maker_fee + cost.entry_latency_slippage
+    charged += sum(exit_event.fraction_of_original * cost.tp_maker_fee for exit_event in position.exits)
+    if position.stopped_out:
+        charged += position.remaining_fraction * (cost.sl_taker_fee + cost.sl_leg_slippage)
+    return charged / risk_per_unit
 
 
 def _compute_realized_r(position: PositionState, candidate: CandidateSignal) -> float:

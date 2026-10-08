@@ -15,6 +15,15 @@ depends on order-book depth, queue position, and intrabar path, none
 of which OHLC bars capture) — it is deliberately conservative-leaning
 and documented as an assumption, not a measurement.
 
+DETERMINISTIC PROBABILITY APPLICATION: the geometric probability returned
+by `assess_limit_fill` is applied by drawing a seeded uniform variate.
+The stable replay signal key is `strategy:symbol:direction:event_ts_ms`;
+the seed is the big-endian integer represented by the first 8 bytes of
+SHA-256(UTF-8(signal_id + NUL + bar_close_time_ms)). The draw is
+`random.Random(seed).random()`, so the same signal/bar always gives the
+same decision regardless of process hash randomization or replay order.
+This is a deterministic modeling convention, not calibrated fill data.
+
 PARTIAL-TP MODEL: exits the position in the configured fractions
 (spec section 21 / config/risk.yaml's partial_exit_fractions, default
 40/30/20/10) as each TP level is reached, in order. A trade that never
@@ -28,9 +37,11 @@ into this module's pure functions at each relevant event.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import random
 
 from app.core.math import OHLC
-from app.core.models import Direction
+from app.core.models import CandidateSignal, Direction
 
 
 @dataclass(frozen=True)
@@ -82,6 +93,28 @@ def assess_limit_fill(
         fill_price = min(entry_high, bar.high)
 
     return FillAssessment(is_filled=True, fill_probability=probability, fill_price=fill_price)
+
+
+def deterministic_candidate_signal_id(candidate: CandidateSignal) -> str:
+    """Stable backtest-only identity for a candidate, since candidates
+    precede final Signal construction (whose live IDs contain randomness)."""
+    return f"{candidate.strategy_source}:{candidate.symbol}:{candidate.direction.value}:{candidate.event_ts_ms}"
+
+
+def deterministic_fill_uniform(signal_id: str, bar_timestamp_ms: int) -> float:
+    """Return reproducible U[0, 1) derived from signal identity and bar time."""
+    material = f"{signal_id}\0{int(bar_timestamp_ms)}".encode("utf-8")
+    seed = int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
+    return random.Random(seed).random()
+
+
+def fill_probability_succeeds(assessment: FillAssessment, *, signal_id: str, bar_timestamp_ms: int) -> bool:
+    """Apply the assessment's overlap probability deterministically."""
+    if not assessment.is_filled or assessment.fill_probability <= 0:
+        return False
+    if assessment.fill_probability >= 1:
+        return True
+    return deterministic_fill_uniform(signal_id, bar_timestamp_ms) < assessment.fill_probability
 
 
 @dataclass(frozen=True)
