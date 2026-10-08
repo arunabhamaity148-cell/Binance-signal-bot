@@ -63,7 +63,8 @@ def test_format_matches_spec_example_exactly():
         "📐 R:R: 1 : 2.1   ⏳ Expiry: 45m\n"
         "📰 News: no blocking event   🏦 Binance: healthy\n"
         "🛡️ Veto: PASS\n"
-        "ID: CSB-20260926-4F1A2C"
+        "ID: CSB-20260926-4F1A2C\n"
+        "⚠️ Delta prices unavailable — using Binance values only."
     )
     assert msg == expected
 

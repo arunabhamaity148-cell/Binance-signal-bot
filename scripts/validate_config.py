@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validates all six config YAML files against the schema described in
+"""Validates all seven config YAML files against the schema described in
 CONFIG_SCHEMAS.md. Returns a list of human-readable error strings;
 an empty list means validation passed.
 
@@ -98,6 +98,8 @@ def validate_system(data: dict[str, Any]) -> list[str]:
          "system.yaml: 'binance_base_url' must be an https:// URL")
     _err(errors, data.get("binance_env") in ("mainnet", "testnet"),
          "system.yaml: 'binance_env' must be 'mainnet' or 'testnet'")
+    _err(errors, isinstance(data.get("delta_enabled"), bool),
+         "system.yaml: 'delta_enabled' must be a boolean")
 
     staleness = data.get("staleness_budget_ms", {})
     _err(errors, isinstance(staleness, dict), "system.yaml: 'staleness_budget_ms' must be a mapping")
@@ -268,6 +270,36 @@ def validate_risk(data: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_delta(data: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    section = data.get("delta")
+    _err(errors, isinstance(section, dict), "delta.yaml: 'delta' must be a mapping")
+    if not isinstance(section, dict):
+        return errors
+    _err(errors, section.get("enabled") is True, "delta.yaml: delta.enabled must be true")
+    _err(errors, isinstance(section.get("base_url"), str) and section["base_url"].startswith("https://"),
+         "delta.yaml: delta.base_url must be an https:// URL")
+    _err(errors, section.get("products_path") == "/v2/products",
+         "delta.yaml: delta.products_path must be /v2/products")
+    ttl = section.get("products_cache_ttl_seconds")
+    _err(errors, isinstance(ttl, (int, float)) and ttl > 0,
+         "delta.yaml: delta.products_cache_ttl_seconds must be positive")
+    fees = section.get("fees", {})
+    _err(errors, isinstance(fees, dict), "delta.yaml: delta.fees must be a mapping")
+    if isinstance(fees, dict):
+        for key in ("maker_pct", "taker_pct", "gst_multiplier"):
+            _err(errors, isinstance(fees.get(key), (int, float)) and fees[key] > 0,
+                 f"delta.yaml: delta.fees.{key} must be positive")
+    notes = section.get("order_notes", {})
+    _err(errors, isinstance(notes, dict), "delta.yaml: delta.order_notes must be a mapping")
+    if isinstance(notes, dict):
+        _err(errors, notes.get("sl_tp_are_separate_orders") is True,
+             "delta.yaml: delta.order_notes.sl_tp_are_separate_orders must be true")
+        _err(errors, notes.get("reduce_only_required") is True,
+             "delta.yaml: delta.order_notes.reduce_only_required must be true")
+    return errors
+
+
 def validate_cross_file_consistency(cfg) -> list[str]:
     """Checks that MUST be identical across two config files.
 
@@ -291,7 +323,7 @@ def validate_cross_file_consistency(cfg) -> list[str]:
 
 def run_validation(cfg) -> list[str]:
     """Accepts an app.config.AppConfig instance. Returns a flat list
-    of error strings across all six files."""
+    of error strings across all seven files."""
     errors: list[str] = []
     errors.extend(validate_top20_pairs(cfg.top20_pairs))
     errors.extend(validate_system(cfg.system))
@@ -299,6 +331,7 @@ def run_validation(cfg) -> list[str]:
     errors.extend(validate_veto(cfg.veto))
     errors.extend(validate_news_sources(cfg.news_sources))
     errors.extend(validate_risk(cfg.risk))
+    errors.extend(validate_delta(cfg.delta))
     errors.extend(validate_cross_file_consistency(cfg))
     return errors
 
@@ -320,7 +353,7 @@ def main() -> int:
         print(f"\n{len(errors)} error(s) found.", file=sys.stderr)
         return 1
 
-    print("CONFIG VALIDATION: PASS (all six config files valid)")
+    print("CONFIG VALIDATION: PASS (all seven config files valid)")
     return 0
 
 

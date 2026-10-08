@@ -88,6 +88,23 @@ def _format_expiry_minutes(expiry_ts_ms: int, as_of_ts_ms: int) -> str:
     return f"{minutes}m"
 
 
+def _delta_lines(signal: Signal) -> list[str]:
+    if not signal.delta_available:
+        return ["⚠️ Delta prices unavailable — using Binance values only."]
+    return [
+        "━━━ DELTA EXECUTION ━━━",
+        f"📌 Symbol: {signal.delta_symbol or signal.symbol}",
+        f"📦 Contracts: {_format_price(signal.delta_contracts or 0.0)}",
+        f"🎯 Entry: {_format_price(signal.delta_entry_low or 0.0)} – {_format_price(signal.delta_entry_high or 0.0)}",
+        f"🛑 SL: {_format_price(signal.delta_stop_loss or 0.0)}",
+        f"🎯 TP1: {_format_price(signal.delta_tp1 or 0.0)}   TP2: {_format_price(signal.delta_tp2 or 0.0)}",
+        f"🎯 TP3: {_format_price(signal.delta_tp3 or 0.0)}   TP4: {_format_price(signal.delta_tp4 or 0.0)}",
+        f"📐 Delta R:R (with GST): 1 : {_format_rr(signal.delta_rr_tp2 or 0.0)}",
+        "⚠️ SL and TP must be SEPARATE orders on Delta",
+        "   (both with reduce_only=true)",
+    ]
+
+
 def _build_lines(signal: Signal, ctx: DeliveryContext) -> list[str]:
     """Build every line of the message, in order. Each element of the
     returned list is one logical line as specified; some spec lines
@@ -111,7 +128,10 @@ def _build_lines(signal: Signal, ctx: DeliveryContext) -> list[str]:
     veto = f"🛡️ Veto: {signal.veto_state}"
     signal_id_line = f"ID: {signal.signal_id}"
 
-    return [header, *warning_lines, grade_conf, entry, sl, tp12, tp34, rr_expiry, news_binance, veto, signal_id_line]
+    return [
+        header, *warning_lines, grade_conf, entry, sl, tp12, tp34, rr_expiry,
+        news_binance, veto, signal_id_line, *_delta_lines(signal),
+    ]
 
 
 # Precedence order for what gets dropped FIRST when the message is too

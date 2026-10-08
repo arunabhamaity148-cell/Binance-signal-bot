@@ -1,0 +1,15 @@
+delta:
+  enabled: true
+  base_url: "https://api.india.delta.exchange"
+  products_path: "/v2/products"
+  products_cache_ttl_seconds: 3600        # class: E
+
+  fees:                                    # class: A (Delta published)
+    maker_pct: 0.020
+    taker_pct: 0.050
+    gst_multiplier: 1.18
+
+  order_notes:
+    sl_tp_are_separate_orders: true
+    reduce_only_required: true
+    default_leverage: 10                   # advisory only

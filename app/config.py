@@ -1,7 +1,7 @@
 """Configuration loading.
 
-Loads the six YAML config files (top20_pairs, system, strategy, veto,
-news_sources, risk) into plain dict structures. Validation of required
+Loads the seven YAML config files (top20_pairs, system, strategy, veto,
+news_sources, risk, delta) into plain dict structures. Validation of required
 keys/types/ranges lives in scripts/validate_config.py and is re-run at
 boot via `load_and_validate_all()` so a bad config can never silently
 start the bot.
@@ -33,6 +33,7 @@ _REQUIRED_FILES = (
     "veto.yaml",
     "news_sources.yaml",
     "risk.yaml",
+    "delta.yaml",
 )
 
 
@@ -44,6 +45,7 @@ class AppConfig:
     veto: dict[str, Any]
     news_sources: dict[str, Any]
     risk: dict[str, Any]
+    delta: dict[str, Any]
     config_dir: Path
 
     def pair_config(self, symbol: str) -> dict[str, Any]:
@@ -83,7 +85,7 @@ def _load_yaml_file(path: Path) -> dict[str, Any]:
 
 
 def load_all(config_dir: Path | None = None) -> AppConfig:
-    """Load all six config files from `config_dir` (defaults to the
+    """Load all seven config files from `config_dir` (defaults to the
     repository's config/ directory). Does NOT perform semantic
     validation beyond "is this valid YAML with a top-level mapping" —
     call `validate_config.run_validation(cfg)` separately (also
@@ -104,6 +106,7 @@ def load_all(config_dir: Path | None = None) -> AppConfig:
         veto=_load_yaml_file(directory / "veto.yaml"),
         news_sources=_load_yaml_file(directory / "news_sources.yaml"),
         risk=_load_yaml_file(directory / "risk.yaml"),
+        delta=_load_yaml_file(directory / "delta.yaml"),
         config_dir=directory,
     )
 

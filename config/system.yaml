@@ -19,6 +19,7 @@ forbidden_credentials:                  # class: E
 binance_base_url: "https://fapi.binance.com"        # class: A
 binance_ws_base_url: "wss://fstream.binance.com/stream"   # class: A
 binance_env: "mainnet"                 # class: E; opt-in "testnet" for pipeline verification only
+delta_enabled: true                      # class: E; public metadata only
 
 rate_limit_budget:
   rest_weight_per_minute: 2400          # class: A, source: Binance USDⓈ-M weight limit (conservative sub-limit of documented cap)

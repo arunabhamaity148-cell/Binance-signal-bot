@@ -55,6 +55,21 @@ class Signal(BaseModel):
 
     meta: dict
 
+    # Optional semi-automated Delta execution values. These never imply
+    # order placement; false/None means the public product metadata was not
+    # available for this signal.
+    delta_available: bool = False
+    delta_symbol: str | None = None
+    delta_contracts: float | None = None
+    delta_entry_low: float | None = None
+    delta_entry_high: float | None = None
+    delta_stop_loss: float | None = None
+    delta_tp1: float | None = None
+    delta_tp2: float | None = None
+    delta_tp3: float | None = None
+    delta_tp4: float | None = None
+    delta_rr_tp2: float | None = None
+
     # These are supplied at validation time via a private context
     # mechanism (see `build_signal` below) rather than being pydantic
     # fields themselves, since price_tick/qty_step are properties of

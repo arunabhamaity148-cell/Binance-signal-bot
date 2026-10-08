@@ -25,6 +25,8 @@ from app.data.normalization import (funding_rate_to_timestamped, long_short_rati
     taker_long_short_ratio_to_timestamped)
 from app.data.orderbook import depth_and_ticker_to_orderbook_state
 from app.data.snapshot import SnapshotInputs, build_snapshot
+from app.exchanges.delta_converter import to_delta_fields
+from app.exchanges.delta_products import DeltaProductsClient, DeltaProductsSchemaError
 from app.news.collectors import NewsCollector, build_retry_config, build_source_configs
 from app.news.engine import NewsEngine, run_collection_cycle
 from app.risk.risk_engine import (DailyCounters, OpenSignalRecord, RiskState, apply_min_rr_gate,
@@ -43,6 +45,7 @@ _STOP = object()
 _TIMEFRAMES = ("5m", "15m", "1h", "4h", "1d")
 DERIVATIVES_REFRESH_INTERVAL_S = 15 * 60  # class E; operator-approved default
 DERIVATIVES_HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000
+DELTA_PRODUCTS_REFRESH_INTERVAL_S = 60 * 60  # class E; hourly cache refresh only
 
 
 def _merge_timestamped_history(existing, raw_rows, converter, received_ts_ms, start_time_ms, end_time_ms):
@@ -379,6 +382,7 @@ class SignalBot:
         self.news_engine=None; self.news_collector=None; self.news_sources=[]; self.news_task=None
         self.error_notifier=None; self.report_task=None
         self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
+        self.delta_client=None; self.delta_products={}; self.delta_task=None
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock()
         self._cycle_candidates=0; self._cycle_signals=0
         self._boot_started_monotonic=time.monotonic(); self._snapshot_diagnostics={}
@@ -496,6 +500,7 @@ class SignalBot:
             await asyncio.sleep(min(0.1,remaining))
 
     async def start_news_collectors(self):
+        await self.initialize_delta_products()
         await self.repo.connect()
         dry_raw=os.getenv("TELEGRAM_DRY_RUN","true").strip().lower()
         if dry_raw not in {"true","false","1","0","yes","no"}: raise ValueError("TELEGRAM_DRY_RUN must be true/false")
@@ -509,6 +514,52 @@ class SignalBot:
         self.report_task=asyncio.create_task(run_daily_report_loop(
             self.repo,self.sender,self.cfg.risk["paper_trading_assumptions"],self.stop_event
         ),name="daily-report-2359-ist")
+
+    async def initialize_delta_products(self):
+        """Fetch public Delta metadata; failure leaves signals Binance-only."""
+        if not self.cfg.system.get("delta_enabled", False):
+            return
+        section=self.cfg.delta.get("delta", {})
+        self.delta_client=DeltaProductsClient(
+            section["base_url"], int(section["products_cache_ttl_seconds"]),
+            products_path=section["products_path"],
+        )
+        try:
+            self.delta_products=await asyncio.wait_for(self.delta_client.fetch_products(), timeout=15.0)
+            logger.info("delta_products_loaded",extra={"context":{"count":len(self.delta_products)}})
+        except DeltaProductsSchemaError as exc:
+            logger.error("Delta products schema mismatch; raw response follows",
+                         extra={"context":{"raw_response":exc.raw_response}})
+            raise
+        except Exception as exc:
+            self.delta_products=self.delta_client.get_cached()
+            logger.warning("Delta products unavailable; continuing Binance-only",
+                           extra={"context":{"error":f"{type(exc).__name__}: {exc}","cached_count":len(self.delta_products)}})
+
+    async def _refresh_delta_products_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=DELTA_PRODUCTS_REFRESH_INTERVAL_S)
+            except asyncio.TimeoutError:
+                try:
+                    self.delta_products=await self.delta_client.fetch_products()
+                    logger.info("delta_products_refreshed",extra={"context":{"count":len(self.delta_products)}})
+                except Exception as exc:
+                    logger.warning("Delta products refresh failed; retaining cache",
+                                   extra={"context":{"error":f"{type(exc).__name__}: {exc}","cached_count":len(self.delta_products)}})
+
+    def _populate_delta_fields(self, signal):
+        spec=self.delta_products.get(signal.symbol)
+        if spec is None:
+            return signal
+        section=self.cfg.delta.get("delta", {})
+        try:
+            fields=to_delta_fields(signal,spec,fees=section.get("fees"))
+        except Exception as exc:
+            logger.warning("Delta conversion failed; continuing Binance-only",
+                           extra={"context":{"symbol":signal.symbol,"error":f"{type(exc).__name__}: {exc}"}})
+            return signal
+        return signal.model_copy(update={"delta_available":True,**fields})
 
     async def _news_loop(self):
         while not self.stop_event.is_set():
@@ -648,6 +699,7 @@ class SignalBot:
             signal=build_final_signal(candidate=candidate,snapshot=snapshot,grade=grade,confidence_weighted=confidence,
                 veto_outcome=veto,size_units_advisory=sizing.qty,notional_usd_advisory=sizing.notional_usd,
                 expiry_per_grade=self.cfg.risk["expiry_per_grade"],created_ts_ms=snapshot.as_of_ts_ms)
+            signal=self._populate_delta_fields(signal)
             if signal.veto_state!="PASS":
                 for item in group:
                     self._log_candidate(item,grade=grade_label,veto="BLOCK",reason=signal.veto_reason or "final_signal_veto",stage="rejected")
@@ -671,6 +723,8 @@ class SignalBot:
         self.outbox_task=asyncio.create_task(self._publisher_loop(),name="telegram-outbox")
         self.oi_task=asyncio.create_task(self._refresh_oi_loop(),name="live-oi-poller")
         self.derivatives_task=asyncio.create_task(self._refresh_derivatives_history_loop(),name="historical-derivatives-refresh")
+        if self.delta_client is not None:
+            self.delta_task=asyncio.create_task(self._refresh_delta_products_loop(),name="delta-products-refresh")
         interval=float(os.getenv("SIGNAL_EVALUATION_INTERVAL_S","300"))
         cycle=0; health_window_cycles=0; health_window_candidates=0; health_window_signals=0
         last_health_report=None
@@ -714,15 +768,15 @@ class SignalBot:
             if self._closed: return
             self._closed=True
             if self.stop_event: self.stop_event.set()
-            for task in (self.news_task,self.oi_task,self.derivatives_task,self.report_task,self.cache.ws_task if self.cache else None):
+            for task in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.report_task,self.cache.ws_task if self.cache else None):
                 if task and not task.done(): task.cancel()
-            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
+            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
             if self.outbox_task and not self.outbox_task.done():
                 await self.outbox.join(); self.outbox.put_nowait(_STOP); await self.outbox.join(); await self.outbox_task
             if self.error_notifier is not None:
                 try: await self.error_notifier.stop()
                 except Exception as exc: logger.warning("error notifier shutdown failed",extra={"context":{"error_type":type(exc).__name__}})
-            for obj in (self.news_collector,self.sender,self.repo,self.rest):
+            for obj in (self.news_collector,self.sender,self.repo,self.rest,self.delta_client):
                 if obj is not None:
                     try: await obj.close()
                     except Exception: logger.exception("component shutdown failed",extra={"context":{"component":type(obj).__name__}})
