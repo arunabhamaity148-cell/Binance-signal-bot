@@ -8,11 +8,12 @@ import os
 import sys
 import signal as os_signal
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Mapping
 
 from app.config import AppConfig, get_assumed_account_equity_usd, load_and_validate_all
 from app.core.errors import MissingAssumedEquityError
-from app.core.logging import get_logger
+from app.core.logging import configure_logging, get_logger
 from app.data.binance.models import RawExchangeInfoSymbol
 from app.bot import SignalBot, SnapshotReadinessError
 
@@ -138,14 +139,16 @@ async def _run_with_signals(dependencies=None)->None:
 
 
 def main(*,dependencies:BootDependencies|None=None)->int:
+    Path("logs").mkdir(parents=True, exist_ok=True)
+    configure_logging(
+        level=os.getenv("LOG_LEVEL", "INFO"),
+        json_output=os.getenv("LOG_JSON", "false").strip().lower() in {"1", "true", "yes"},
+    )
     try:
         asyncio.run(_run_with_signals(dependencies))
         return 0
     except KeyboardInterrupt:
         return 130
-    except Exception as exc:
-        logger.error("startup/runtime failed",extra={"context":{"stage":getattr(exc,"boot_stage","unknown"),"error":str(exc)}})
-        return 1
 
 
 if __name__=="__main__": raise SystemExit(main())

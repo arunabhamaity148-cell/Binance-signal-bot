@@ -13,8 +13,8 @@ from app.core.errors import SnapshotIncompleteError
 from app.core.logging import get_logger
 from app.core.models import Direction, GuardAction, NewsState, TakerFlowState, TimestampedValue
 from app.core.time_utils import now_ms, utc_date_str
-from app.data.binance.models import (RawAggTrade, RawBookTicker, RawDepthSnapshot, RawKline,
-    RawLongShortRatio, RawOpenInterest)
+from app.data.binance.models import (RawAggTrade, RawBookTicker, RawDepthSnapshot, RawExchangeInfoSymbol,
+    RawKline, RawLongShortRatio, RawOpenInterest)
 from app.data.binance.rest import BinanceRestClient, RestClientConfig
 from app.data.binance.websocket import BinanceWebSocketClient, WebSocketClientConfig
 from app.data.derivatives import POLL_INTERVAL_LIVE_OI_S, build_derivatives_state, merge_live_oi_into_5m_series

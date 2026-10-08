@@ -202,7 +202,8 @@ async def test_first_snapshot_gate_accepts_15_ready_of_20():
 
 
 @pytest.mark.parametrize("bad_equity", [None, "not-a-number", "0", "-1", "nan", "inf"])
-def test_missing_or_invalid_equity_stops_at_equity_stage_and_cli_returns_nonzero(bad_equity):
+def test_missing_or_invalid_equity_stops_at_equity_stage_and_cli_propagates_real_error(bad_equity, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     cfg = load_and_validate_all(); visited = []
     def equity():
         if bad_equity is None or bad_equity == "not-a-number":
@@ -213,7 +214,9 @@ def test_missing_or_invalid_equity_stops_at_equity_stage_and_cli_returns_nonzero
         asyncio.run(run_application(dependencies=deps, stage_callback=visited.append))
     assert caught.value.boot_stage == "assumed_equity_validation"
     assert visited == ["configuration_validation", "assumed_equity_validation"]
-    assert main(dependencies=deps) == 1
+    with pytest.raises(MissingAssumedEquityError):
+        main(dependencies=deps)
+    assert (tmp_path / "logs").is_dir()
 
 
 def test_bad_config_stops_before_equity_and_bot_creation():
@@ -256,3 +259,26 @@ async def test_snapshot_timeout_reports_exact_symbols_and_stage():
     assert caught.value.boot_stage=="websocket_first_snapshot"
     assert "['BTCUSDT', 'ETHUSDT']" in str(caught.value)
     assert bot.closed is True
+
+
+@pytest.mark.asyncio
+async def test_signal_bot_exchange_info_parses_public_payload_without_network():
+    cfg = load_and_validate_all()
+    payload = {
+        "symbols": [{
+            "symbol": "BTCUSDT",
+            "status": "TRADING",
+            "filters": [
+                {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+                {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+            ],
+        }]
+    }
+
+    class PayloadRest:
+        async def _get(self, path):
+            assert path == "/fapi/v1/exchangeInfo"
+            return payload
+
+    bot = SignalBot(cfg, 2400.0, rest_client=PayloadRest(), repository=_RepoCloseOnly())
+    assert await bot.exchange_info() == [RawExchangeInfoSymbol("BTCUSDT", "TRADING", 0.1, 0.001, 0.001)]

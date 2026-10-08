@@ -5,6 +5,11 @@ all records and sends at most one Telegram notification per five minutes
 per process. The rate-limit clock intentionally resets on restart. Any
 persistence or Telegram failure is written to stderr and never propagated
 back into the application logger or market-data loop.
+
+`logging.Handler.flush()` is deliberately synchronous and non-blocking:
+Python's logging shutdown calls it synchronously, so it must never return
+an awaitable. The background worker owns queue processing; async lifecycle
+code uses `drain()`/`stop()` when it needs to wait for queued work.
 """
 from __future__ import annotations
 
@@ -180,7 +185,12 @@ class ErrorNotifier(logging.Handler):
         except Exception as exc:  # a Telegram outage must never affect the bot
             self._stderr(f"Telegram error notification failed: {type(exc).__name__}: {exc}")
 
-    async def flush(self) -> None:
+    def flush(self) -> None:
+        """Synchronous logging shutdown hook; queue work stays with the worker."""
+        return
+
+    async def drain(self) -> None:
+        """Wait asynchronously until all records currently enqueued are handled."""
         await self._queue.join()
 
     async def stop(self) -> None:
@@ -189,7 +199,7 @@ class ErrorNotifier(logging.Handler):
             return
         logging.getLogger().removeHandler(self)
         self._active = False
-        await self._queue.join()
+        await self.drain()
         await self._queue.put(_STOP)
         if self._worker is not None:
             await self._worker

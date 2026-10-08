@@ -39,7 +39,7 @@ async def test_persists_every_error_but_throttles_telegram_to_one_per_five_minut
             record.context = {"symbol": "BTCUSDT", "strategy": "S3"}
             notifier.handle(record)
         await asyncio.sleep(0)
-        await notifier.flush()
+        await notifier.drain()
         assert len(sent) == 2
         assert notifier.stats["enqueued"] == 3
         assert notifier.stats["rate_limited"] == 1
@@ -79,7 +79,7 @@ async def test_notifier_dry_run_persists_without_network(tmp_path):
     try:
         record = logging.LogRecord("app.test", logging.CRITICAL, "test.py", 1, "critical issue", (), None)
         notifier.handle(record)
-        await notifier.flush()
+        await notifier.drain()
         data = await repo.get_daily_report_data(start_ts_ms=0, end_ts_ms=10_000_000_000_000)
         assert data["errors_by_severity"] == {"CRITICAL": 1}
     finally:
@@ -103,7 +103,7 @@ async def test_telegram_failure_is_contained_and_event_remains_persisted(tmp_pat
         record = logging.LogRecord("app.test", logging.ERROR, "test.py", 3, "loop recovered", (), None)
         notifier.handle(record)
         await asyncio.sleep(0)
-        await notifier.flush()
+        await notifier.drain()
         assert "Telegram error notification failed" in capsys.readouterr().err
         data = await repo.get_daily_report_data(start_ts_ms=0, end_ts_ms=10**15)
         assert data["errors_by_severity"] == {"ERROR": 1}
