@@ -16,15 +16,20 @@ logger = get_logger(__name__)
 @dataclass(frozen=True)
 class DeltaProductSpec:
     symbol: str
+    underlying: str
+    quoting: str
     contract_value: float
     tick_size: float
-    min_size: float
-    max_size: float
+    position_size_limit: int
+    position_notional_limit: float
+    maker_rate: float
+    taker_rate: float
+    trading_status: str
     raw: dict[str, Any]
 
 
 class DeltaProductsSchemaError(ValueError):
-    """Raised when Delta's public products response is not the documented schema."""
+    """Retained for callers that need to classify a malformed response."""
 
     def __init__(self, message: str, raw_response: Any):
         super().__init__(message)
@@ -65,17 +70,20 @@ class DeltaProductsClient:
             payload = await self._fetch_with_retries()
             result = payload.get("result") if isinstance(payload, dict) else None
             if not isinstance(result, list):
-                raise DeltaProductsSchemaError(
-                    "Delta products response must contain a result array", payload
-                )
+                logger.warning("Delta products schema mismatch; skipping response",
+                               extra={"context": {"raw_response": payload}})
+                return self.get_cached()
             parsed = self._parse_products(result, payload)
+            if not parsed:
+                logger.warning("Delta products parsed zero valid rows",
+                               extra={"context": {"raw_response": payload, "total": len(result)}})
+                return self.get_cached()
             self._cached = parsed
             self._cached_at = time.monotonic()
             return self.get_cached()
-        except DeltaProductsSchemaError:
-            raise
         except Exception as exc:  # fail closed while retaining stale metadata
-            logger.error("Delta products fetch failed", extra={"context": {"error": f"{type(exc).__name__}: {exc}", "using_stale_cache": bool(self._cached)}})
+            logger.warning("Delta products fetch failed; retaining cache",
+                           extra={"context": {"error": f"{type(exc).__name__}: {exc}", "using_stale_cache": bool(self._cached)}})
             return self.get_cached()
 
     async def _fetch_with_retries(self) -> dict[str, Any]:
@@ -111,18 +119,42 @@ class DeltaProductsClient:
         raise last_error or RuntimeError("Delta products fetch failed")
 
     @staticmethod
-    def _parse_products(rows: list[Any], payload: Any) -> dict[str, DeltaProductSpec]:
+    def _parse_products(rows: list[Any], full_payload: dict[str, Any]) -> dict[str, DeltaProductSpec]:
         parsed: dict[str, DeltaProductSpec] = {}
-        required = ("symbol", "contract_value", "tick_size", "min_size", "max_size")
+        skipped = 0
         for row in rows:
-            if not isinstance(row, dict) or any(key not in row for key in required):
-                raise DeltaProductsSchemaError("Delta product row schema mismatch", payload)
             try:
-                symbol = str(row["symbol"])
-                values = {key: float(row[key]) for key in required[1:]}
-            except (TypeError, ValueError) as exc:
-                raise DeltaProductsSchemaError("Delta product numeric field is invalid", payload) from exc
-            if not symbol or any(value <= 0 for value in values.values()):
-                raise DeltaProductsSchemaError("Delta product contains non-positive fields", payload)
-            parsed[symbol] = DeltaProductSpec(symbol=symbol, raw=dict(row), **values)
+                if not isinstance(row, dict):
+                    raise TypeError("product row is not an object")
+                underlying = row.get("underlying_asset", {}).get("symbol", "")
+                quoting = row.get("quoting_asset", {}).get("symbol", "")
+                symbol = str(row.get("symbol", "")).strip()
+                if not underlying or not quoting or not symbol:
+                    raise ValueError("missing symbol or underlying/quoting asset")
+                contract_value = float(row.get("contract_value", 0))
+                tick_size = float(row.get("tick_size", 0))
+                position_size_limit = int(row.get("position_size_limit", 0) or 0)
+                position_notional_limit = float(row.get("position_notional_limit", 0) or 0)
+                maker_rate = float(row.get("maker_commission_rate", 0) or 0)
+                taker_rate = float(row.get("taker_commission_rate", 0) or 0)
+                trading_status = str(row.get("trading_status", ""))
+                if contract_value <= 0 or tick_size <= 0 or position_size_limit <= 0:
+                    raise ValueError("non-positive contract, tick, or position-size limit")
+                parsed[symbol] = DeltaProductSpec(
+                    symbol=symbol,
+                    underlying=str(underlying),
+                    quoting=str(quoting),
+                    contract_value=contract_value,
+                    tick_size=tick_size,
+                    position_size_limit=position_size_limit,
+                    position_notional_limit=position_notional_limit,
+                    maker_rate=maker_rate,
+                    taker_rate=taker_rate,
+                    trading_status=trading_status,
+                    raw=dict(row),
+                )
+            except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                skipped += 1
+                logger.warning("delta_product_row_skipped", extra={"context": {"error": str(exc), "row": row}})
+        logger.info("delta_products_parsed", extra={"context": {"parsed": len(parsed), "skipped": skipped, "total": len(rows)}})
         return parsed

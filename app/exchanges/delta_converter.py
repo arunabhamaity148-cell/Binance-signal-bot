@@ -8,6 +8,9 @@ from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any
 
 
+_KNOWN_QUOTES = ("USDT", "USDC", "BUSD", "USD")
+
+
 def _decimal(value: float) -> Decimal:
     return Decimal(str(value))
 
@@ -19,15 +22,14 @@ def _as_float(value: Decimal) -> float:
 def binance_qty_to_delta_contracts(
     binance_qty: float,
     contract_value: float,
-    min_size: float,
+    max_contracts: int,
 ) -> float:
-    """Convert base-asset quantity to contracts, rounded down to min_size."""
-    if binance_qty <= 0 or contract_value <= 0 or min_size <= 0:
+    """Convert base-asset quantity to whole Delta contracts and cap per order."""
+    if binance_qty <= 0 or contract_value <= 0 or max_contracts <= 0:
         return 0.0
-    contracts = _decimal(binance_qty) / _decimal(contract_value)
-    multiple = (contracts / _decimal(min_size)).to_integral_value(rounding=ROUND_DOWN)
-    result = multiple * _decimal(min_size)
-    return _as_float(result) if result >= _decimal(min_size) else 0.0
+    calculated = (_decimal(binance_qty) / _decimal(contract_value)).to_integral_value(rounding=ROUND_DOWN)
+    capped = min(calculated, _decimal(max_contracts))
+    return _as_float(capped) if capped > 0 else 0.0
 
 
 def round_to_tick(price: float, tick_size: float) -> float:
@@ -42,17 +44,17 @@ def adjust_rr_for_delta(
     entry: float,
     sl: float,
     tp2: float,
-    maker_pct: float,
-    taker_pct: float,
+    maker_rate: float,
+    taker_rate: float,
     gst_multiplier: float,
 ) -> float:
-    """Recompute TP2 R:R using Delta fees plus GST.
+    """Recompute TP2 R:R using decimal API fee rates plus GST.
 
-    TP2 assumes maker fees on both entry and limit TP. Stop loss assumes
-    maker entry plus taker stop-market execution.
+    ``maker_rate`` and ``taker_rate`` are decimal rates, e.g. 0.0002
+    and 0.0005, as returned by Delta's products API.
     """
-    em = maker_pct * gst_multiplier / 100.0
-    et = taker_pct * gst_multiplier / 100.0
+    em = maker_rate * gst_multiplier
+    et = taker_rate * gst_multiplier
     tp_cost = 2.0 * em * entry
     sl_cost = (em + et) * entry
     risk = abs(entry - sl) + sl_cost
@@ -62,9 +64,40 @@ def adjust_rr_for_delta(
     return reward / risk
 
 
+def resolve_delta_symbol(binance_symbol: str, products: dict[str, Any]) -> Any | None:
+    """Resolve a Binance symbol such as BTCUSDT to an operational Delta spec."""
+    symbol = str(binance_symbol).upper().strip()
+    base = None
+    for quote in _KNOWN_QUOTES:
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            base = symbol[:-len(quote)]
+            break
+    if not base:
+        return None
+    exact = products.get(f"{base}USD")
+    if (
+        exact is not None
+        and str(getattr(exact, "underlying", "")).upper() == base
+        and str(getattr(exact, "quoting", "")).upper() in {"USD", "USDT"}
+        and str(getattr(exact, "trading_status", "")).lower() == "operational"
+    ):
+        return exact
+    for spec in products.values():
+        if (
+            str(getattr(spec, "underlying", "")).upper() == base
+            and str(getattr(spec, "quoting", "")).upper() in {"USD", "USDT"}
+            and str(getattr(spec, "trading_status", "")).lower() == "operational"
+        ):
+            return spec
+    return None
+
+
 def to_delta_fields(signal: Any, spec: Any, *, fees: dict[str, float] | None = None) -> dict[str, Any]:
-    """Return Delta-ready fields for a Signal and Delta product spec."""
+    """Return Delta-ready fields for a Signal and a resolved Delta product spec."""
     fees = fees or {"maker_pct": 0.020, "taker_pct": 0.050, "gst_multiplier": 1.18}
+    maker_rate = float(getattr(spec, "maker_rate", 0.0) or 0.0) or float(fees["maker_pct"]) / 100.0
+    taker_rate = float(getattr(spec, "taker_rate", 0.0) or 0.0) or float(fees["taker_pct"]) / 100.0
+    gst_multiplier = float(fees["gst_multiplier"])
     entry_low = round_to_tick(signal.entry_low, spec.tick_size)
     entry_high = round_to_tick(signal.entry_high, spec.tick_size)
     stop_loss = round_to_tick(signal.stop_loss, spec.tick_size)
@@ -76,7 +109,7 @@ def to_delta_fields(signal: Any, spec: Any, *, fees: dict[str, float] | None = N
     return {
         "delta_symbol": spec.symbol,
         "delta_contracts": binance_qty_to_delta_contracts(
-            signal.size_units_advisory, spec.contract_value, spec.min_size
+            signal.size_units_advisory, spec.contract_value, spec.position_size_limit
         ),
         "delta_entry_low": entry_low,
         "delta_entry_high": entry_high,
@@ -86,6 +119,6 @@ def to_delta_fields(signal: Any, spec: Any, *, fees: dict[str, float] | None = N
         "delta_tp3": tp3,
         "delta_tp4": tp4,
         "delta_rr_tp2": adjust_rr_for_delta(
-            entry, stop_loss, tp2, fees["maker_pct"], fees["taker_pct"], fees["gst_multiplier"]
+            entry, stop_loss, tp2, maker_rate, taker_rate, gst_multiplier
         ),
     }

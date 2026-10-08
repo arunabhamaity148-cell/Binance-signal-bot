@@ -25,8 +25,8 @@ from app.data.normalization import (funding_rate_to_timestamped, long_short_rati
     taker_long_short_ratio_to_timestamped)
 from app.data.orderbook import depth_and_ticker_to_orderbook_state
 from app.data.snapshot import SnapshotInputs, build_snapshot
-from app.exchanges.delta_converter import to_delta_fields
-from app.exchanges.delta_products import DeltaProductsClient, DeltaProductsSchemaError
+from app.exchanges.delta_converter import resolve_delta_symbol, to_delta_fields
+from app.exchanges.delta_products import DeltaProductsClient
 from app.news.collectors import NewsCollector, build_retry_config, build_source_configs
 from app.news.engine import NewsEngine, run_collection_cycle
 from app.risk.risk_engine import (DailyCounters, OpenSignalRecord, RiskState, apply_min_rr_gate,
@@ -527,14 +527,10 @@ class SignalBot:
         try:
             self.delta_products=await asyncio.wait_for(self.delta_client.fetch_products(), timeout=15.0)
             logger.info("delta_products_loaded",extra={"context":{"count":len(self.delta_products)}})
-        except DeltaProductsSchemaError as exc:
-            logger.error("Delta products schema mismatch; raw response follows",
-                         extra={"context":{"raw_response":exc.raw_response}})
-            raise
         except Exception as exc:
-            self.delta_products=self.delta_client.get_cached()
+            self.delta_products={}
             logger.warning("Delta products unavailable; continuing Binance-only",
-                           extra={"context":{"error":f"{type(exc).__name__}: {exc}","cached_count":len(self.delta_products)}})
+                           extra={"context":{"error":f"{type(exc).__name__}: {exc}"}})
 
     async def _refresh_delta_products_loop(self):
         while not self.stop_event.is_set():
@@ -549,7 +545,7 @@ class SignalBot:
                                    extra={"context":{"error":f"{type(exc).__name__}: {exc}","cached_count":len(self.delta_products)}})
 
     def _populate_delta_fields(self, signal):
-        spec=self.delta_products.get(signal.symbol)
+        spec=resolve_delta_symbol(signal.symbol,self.delta_products)
         if spec is None:
             return signal
         section=self.cfg.delta.get("delta", {})
