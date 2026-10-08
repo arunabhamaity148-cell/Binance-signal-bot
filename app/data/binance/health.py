@@ -11,6 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.models import FeedHealth
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,7 +43,16 @@ def assess_feed_health(
             reconnect_count_window=health.reconnect_count_window,
         )
 
-    gap_ms = as_of_ts_ms - health.last_message_received_ts_ms
+    now_ms = int(as_of_ts_ms)
+    last_msg_ms = int(health.last_message_received_ts_ms)
+    gap_ms = max(0, now_ms - last_msg_ms)
+    logger.info(
+        f"G2_check | symbol={health.symbol} | stream={health.stream} | now_ms={now_ms} | "
+        f"last_msg_ms={last_msg_ms} | gap_ms={gap_ms} | threshold={int(feed_gap_threshold_ms)}",
+        extra={"context": {"symbol": health.symbol, "stream": health.stream,
+                            "now_ms": now_ms, "last_msg_ms": last_msg_ms,
+                            "gap_ms": gap_ms, "threshold": int(feed_gap_threshold_ms)}},
+    )
     if gap_ms > feed_gap_threshold_ms:
         return FeedHealthAssessment(
             stream=health.stream,
