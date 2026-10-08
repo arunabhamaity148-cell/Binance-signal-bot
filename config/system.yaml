@@ -1,0 +1,47 @@
+# system.yaml
+
+mode: signal_only                       # class: E, fixed, not overridable
+fail_closed: true                       # class: E, fixed
+
+forbidden_capabilities:                 # class: E
+  - place_order
+  - cancel_order
+  - modify_order
+  - close_position
+  - set_leverage
+  - withdraw
+  - transfer
+
+forbidden_credentials:                  # class: E
+  - BINANCE_API_KEY
+  - BINANCE_API_SECRET
+
+binance_base_url: "https://fapi.binance.com"        # class: A
+binance_ws_base_url: "wss://fstream.binance.com/stream"   # class: A
+
+rate_limit_budget:
+  rest_weight_per_minute: 2400          # class: A, source: Binance USDⓈ-M weight limit (conservative sub-limit of documented cap)
+  ws_connections_max: 10                # class: A, source: Binance WS connection limits
+
+staleness_budget_ms:
+  kline_ms: 15000                       # class: E
+  aggtrade_ms: 5000                     # class: E
+  depth_ms: 500                         # class: E
+  bookticker_ms: 1000                   # class: E
+  funding_ms: 3600000                   # class: A, tied to 8h funding interval
+  oi_ms: 90000                          # class: E
+  # source: 3 x live-OI poll interval (30s); see app/data/derivatives.py
+  ratios_ms: 300000                     # class: E
+
+telegram_limits:
+  messages_per_sec_per_chat: 1          # class: A, source: Telegram Bot API limits
+  messages_per_min_per_group: 20        # class: A, source: Telegram Bot API limits
+  max_message_chars: 1024               # class: E, per spec section 15
+
+database_paths:
+  sqlite_path: "data/signals.db"        # gitignored at runtime
+
+boot_checks:
+  min_symbols_validated: 15             # class: E, per spec section 4 (15 of 20)
+  require_assumed_equity_env: true      # class: E
+  abort_on_trading_credentials_present: true   # class: E

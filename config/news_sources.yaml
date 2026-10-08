@@ -1,0 +1,111 @@
+# news_sources.yaml
+# Free-cost only ($0/month hard requirement, spec section 14). All
+# URLs below are placeholders pending operator verification at
+# deployment time (spec section 13 of the implementation instructions
+# and KNOWN_UNCERTAINTIES.md item 4) - RSS endpoint URLs and free-tier
+# terms can shift and must be re-verified rather than hardcoded from
+# potentially stale knowledge.
+
+tier_1:
+  - name: federal_reserve_press
+    url: "<official Fed RSS URL>"
+    format: rss
+    timeout_s: 10                       # class: E
+    credibility_weight: 1.0             # class: E
+  - name: sec_press
+    url: "<official SEC RSS URL>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 1.0
+  - name: cftc_press
+    url: "<official CFTC RSS URL>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 1.0
+  - name: us_treasury_press
+    url: "<official Treasury RSS URL>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 1.0
+  - name: binance_announcements
+    url: "<official Binance announcements feed>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 1.0
+  - name: blockchain_foundation_announcements
+    url: "<per-asset foundation blog RSS, list expanded per asset>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.9             # class: F, slightly below gov/exchange tier
+
+tier_2:
+  - name: coindesk
+    url: "<CoinDesk RSS URL>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.75            # class: F
+  - name: the_block
+    url: "<The Block RSS URL>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.75
+  - name: cointelegraph
+    url: "<Cointelegraph RSS URL>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.65            # class: F, lower due to higher noise
+  - name: decrypt
+    url: "<Decrypt RSS URL>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.70
+  - name: blockworks
+    url: "<Blockworks RSS URL>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.70
+  - name: reuters_public
+    url: "<Reuters public topic RSS URL, verify free at implementation time>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.80
+
+tier_3:
+  - name: gdelt
+    url: "<GDELT public API endpoint>"
+    format: json
+    timeout_s: 10
+    credibility_weight: 0.30            # class: F
+  - name: google_news_crypto
+    url: "<scoped Google News RSS query URLs, one per tracked entity>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.25
+  - name: cryptopanic_public
+    url: "<CryptoPanic public feed, verify current free-tier terms>"
+    format: rss
+    timeout_s: 10
+    credibility_weight: 0.25
+
+category_half_life_hours:               # class: F throughout
+  regulatory: 6
+  macro: 12
+  hack: 2
+  listing: 4
+  delisting: 4
+  etf: 8
+  liquidation: 1
+  outage: 1
+  other: 3
+
+corroboration:
+  global_block_requires:
+    tier1_single_source: true
+    tier2_min_independent_sources: 2
+  tier3_max_severity: MEDIUM            # hard ceiling, never HIGH/CRITICAL
+
+retry:
+  max_attempts: 4                       # class: E
+  base_backoff_ms: 500                  # class: E
+  jitter_ms: 250                        # class: E
+  respect_retry_after_header: true

@@ -1,0 +1,167 @@
+# top20_pairs.yaml
+# Exact 20-pair universe per spec section 4. min_qty/qty_step/price_tick
+# below are conservative placeholders; the boot sequence cross-checks
+# these against a live /fapi/v1/exchangeInfo call and logs a
+# config-drift warning (not a boot failure) on mismatch, since exchange
+# filters can change independently of this file.
+
+pairs:
+  - symbol: BTCUSDT
+    enabled: true
+    fee_maker_bps: 2.0     # class: A, source: Binance USDⓈ-M fee schedule (standard tier)
+    fee_taker_bps: 5.0     # class: A, source: Binance USDⓈ-M fee schedule (standard tier)
+    min_qty: 0.001         # class: A, source: exchangeInfo LOT_SIZE filter (verify live)
+    qty_step: 0.001        # class: A, source: exchangeInfo LOT_SIZE filter (verify live)
+    price_tick: 0.10       # class: A, source: exchangeInfo PRICE_FILTER (verify live)
+
+  - symbol: ETHUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.001
+    qty_step: 0.001
+    price_tick: 0.01
+
+  - symbol: SOLUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 1
+    qty_step: 1
+    price_tick: 0.001
+
+  - symbol: BNBUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.01
+    qty_step: 0.01
+    price_tick: 0.01
+
+  - symbol: XRPUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 1
+    qty_step: 1
+    price_tick: 0.0001
+
+  - symbol: DOGEUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 1
+    qty_step: 1
+    price_tick: 0.00001
+
+  - symbol: ADAUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 1
+    qty_step: 1
+    price_tick: 0.0001
+
+  - symbol: AVAXUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 1
+    qty_step: 1
+    price_tick: 0.001
+
+  - symbol: LINKUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.01
+    qty_step: 0.01
+    price_tick: 0.001
+
+  - symbol: BCHUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.001
+    qty_step: 0.001
+    price_tick: 0.01
+
+  - symbol: LTCUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.001
+    qty_step: 0.001
+    price_tick: 0.01
+
+  - symbol: DOTUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.1
+    qty_step: 0.1
+    price_tick: 0.001
+
+  - symbol: TRXUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 1
+    qty_step: 1
+    price_tick: 0.00001
+
+  - symbol: SUIUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 1
+    qty_step: 1
+    price_tick: 0.0001
+
+  - symbol: APTUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.1
+    qty_step: 0.1
+    price_tick: 0.001
+
+  - symbol: ARBUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 1
+    qty_step: 1
+    price_tick: 0.0001
+
+  - symbol: OPUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.1
+    qty_step: 0.1
+    price_tick: 0.0001
+
+  - symbol: TONUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.1
+    qty_step: 0.1
+    price_tick: 0.0001
+
+  - symbol: NEARUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.1
+    qty_step: 0.1
+    price_tick: 0.001
+
+  - symbol: ATOMUSDT
+    enabled: true
+    fee_maker_bps: 2.0
+    fee_taker_bps: 5.0
+    min_qty: 0.1
+    qty_step: 0.1
+    price_tick: 0.001

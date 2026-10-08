@@ -1,0 +1,103 @@
+# veto.yaml
+# G1-G15 thresholds. Symbol-tier buckets (majors/mid_caps/small_caps)
+# referenced below are defined once in risk.yaml under symbol_tiers
+# and shared by reference to avoid duplicated/divergent tier lists.
+
+g1_data_integrity:
+  enabled: true
+  severity: CRITICAL
+  # no tunable threshold - structural check
+
+g2_feed_health:
+  feed_gap_threshold_ms: 10000          # class: E
+  max_reconnects_per_window: 5          # class: E
+  reconnect_window_min: 5               # class: E
+  severity: CRITICAL
+
+g3_depth_collapse:
+  min_depth_usd:
+    majors: 200000                      # class: C
+    mid_caps: 75000                     # class: C
+    small_caps: 30000                   # class: C
+  depth_check_levels: 5                 # class: E
+  depth_stale_ms: 500                   # class: E
+  severity: CRITICAL
+
+g4_spread_explosion:
+  max_spread_bps:
+    majors: 5                           # class: C
+    mid_caps: 12                        # class: C
+    small_caps: 25                      # class: C
+  bookticker_stale_ms: 1000             # class: E
+  severity: HIGH
+
+g5_oi_anomaly:
+  oi_anomaly_pct: 0.08                  # class: E
+  oi_stale_ms: 90000                    # class: E
+  # source: 3 x live-OI poll interval (30s). See app/data/derivatives.py
+  # 'HYBRID OPEN-INTEREST SOURCE' docstring for the full derivation and the
+  # REST weight budget check (20 symbols @ 30s = 40 weight/min, ~1.7% of the
+  # 2400 weight/min IP budget).
+  recovery_consecutive_samples: 2       # class: E
+  severity: CRITICAL
+
+g6_funding_extreme:
+  hard_funding_z_threshold: 3.5         # class: F
+  severity: MEDIUM
+  action: DEGRADE
+  degrade_max_grade: "B"
+
+g7_news_shock:
+  min_severity_for_block: HIGH
+  severity: HIGH
+
+g8_volatility_flash:
+  bar_range_atr_mult: 4.0               # class: F
+  atr_percentile_extreme: 0.97          # class: F
+  severity: HIGH
+  action: DEGRADE
+  degrade_max_grade: "A"
+
+g9_btc_regime:
+  severity: MEDIUM
+  action: DEGRADE
+  degrade_max_grade: "B"
+
+g10_orderbook_instability:
+  lopsidedness_ratio: 10.0              # class: E
+  depth_stale_ms: 500                   # class: E
+  severity: CRITICAL
+
+g11_execution_quality:
+  max_acceptable_slippage_bps:
+    majors: 3                           # class: C
+    mid_caps: 8                         # class: C
+    small_caps: 15                      # class: C
+  escalation_multiple: 2.0              # class: E
+  severity: MEDIUM
+  action: DEGRADE
+
+g12_self_consistency:
+  relative_tolerance: 0.000001          # class: B
+  severity: CRITICAL
+
+g13_oi_divergence:
+  divergence_window: 12                 # class: F
+  oi_divergence_min_pct: 0.03           # class: F
+  severity: HIGH
+  exempt_strategies: [S3, S5]
+
+g14_oi_stagnation:
+  oi_noise_band: 0.005                  # class: E
+  strong_move_atr_mult: 1.5             # class: F
+  severity: MEDIUM
+  action: DEGRADE
+  degrade_max_grade: "B"
+  exempt_strategies: [S1]
+
+g15_oi_percentile_extreme:
+  high_threshold: 0.95                  # class: F
+  low_threshold: 0.05                   # class: F
+  min_history_days: 20                  # class: E
+  severity: HIGH
+  applies_to_strategies: [S4]

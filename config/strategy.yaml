@@ -1,0 +1,128 @@
+# strategy.yaml
+# Every threshold marked class F is an unvalidated starting hypothesis
+# (see KNOWN_UNCERTAINTIES.md item 1). Nothing here is calibrated.
+
+common:
+  atr_period: 14                        # class: B
+  min_candles: 60                       # class: E
+  min_stop_cost_multiple: 3.0           # class: E (engineering safety)
+  # source: A stop distance below 3x the cost of entry+exit is not a tradable
+  # setup; costs eat the stop before price moves. Applied to every strategy via
+  # StrategyBase.finalize_candidates. Not threshold tuning: it refuses setups
+  # where the arithmetic cannot work.
+  max_entry_zone_width_r_multiple: 0.30  # class: E (engineering safety)
+  # source: R:R is graded from the entry-zone MIDPOINT. If the zone is wide
+  # relative to R, "R" is ambiguous depending on where in the zone a user
+  # fills. Capping width at 0.30x R keeps R meaningful across every fill
+  # location. Not threshold tuning: refuses to publish signals whose entry
+  # zone is too wide for the R:R claim to be meaningful.
+
+s1_liquidity_sweep:
+  swing_lookback: 3                     # class: F
+  penetration_min_atr: 0.25             # class: F
+  reclaim_band_atr: 0.15                # class: F
+  entry_offset_atr: 0.15                # class: F
+  sl_buffer_atr: 0.5                    # class: F
+  taker_buy_min_long: 0.55              # class: F
+  taker_sell_max_short: 0.45            # class: F
+  taker_flow_window_bars: 3             # class: F
+  taker_stale_ms: 5000                  # class: E
+  tp_r_multiples: [1.0, 2.0, 3.0, 5.0]  # class: B
+
+s2_volatility_compression:
+  range_bars: 60                        # class: F
+  range_width_max_atr_mult: 6.0         # class: F
+  atr_percentile_window: 200            # class: B
+  atr_percentile_max: 0.25              # class: F
+  expansion_atr_mult: 1.2               # class: F
+  volume_confirm_ratio: 1.5             # class: F
+  min_oi_chg_pct: 1.0                   # class: F
+  invalidation_window: 3                # class: F
+  invalidation_atr_mult: 0.5            # class: F
+  sl_boundary_buffer_atr: 0.1           # class: F
+  entry_mode: retest                    # retest | market
+  tp_r_multiples: [1.0, 2.0, 3.0, 5.0]  # class: B
+  oi_stale_ms: 90000                    # class: E
+  # source: 3 x live-OI poll interval (30s); see app/data/derivatives.py
+  # 'HYBRID OPEN-INTEREST SOURCE' docstring. Missing from the original
+  # CONFIG_SCHEMAS.md design doc even though STRATEGIES_SPEC.md's S2
+  # fail-closed conditions require an OI freshness check ("OI data
+  # unavailable or stale beyond oi_stale_ms ... -> NO TRADE"); added
+  # during Batch 3 implementation when S2's evaluate() needed it and
+  # found it absent. Same value and derivation as every other
+  # strategy's oi_stale_ms for consistency.
+
+s3_funding_crowding:
+  funding_z_window: 96                  # class: B
+  min_abs_funding_z: 2.0                # class: F
+  oi_percentile_window_days: 30         # class: B
+  min_oi_pct_rank: 0.85                 # class: F
+  ls_ratio_pct_high: 0.85               # class: F
+  ls_ratio_pct_low: 0.15                # class: F
+  min_price_disp_atr: 2.5               # class: F
+  sl_buffer_atr: 0.6                    # class: F
+  tp_r_multiples: [1.0, 2.0, 3.0, 4.0]  # class: B
+  funding_stale_ms: 3600000             # class: A
+  oi_stale_ms: 90000                    # class: E
+  # source: 3 x live-OI poll interval (30s). See app/data/derivatives.py
+  # 'HYBRID OPEN-INTEREST SOURCE' docstring for the full derivation and the
+  # REST weight budget check (20 symbols @ 30s = 40 weight/min, ~1.7% of the
+  # 2400 weight/min IP budget).
+  ratios_stale_ms: 300000               # class: E
+
+s4_oi_trend:
+  ema_fast_period: 21                   # class: D
+  ema_slow_period: 55                   # class: D
+  ema_slope_lookback: 10                # class: F
+  pullback_tolerance_atr: 0.5           # class: F
+  pullback_lookback_bars: 3             # class: F
+  min_oi_chg_pct: 0.5                   # class: F
+  oi_window_bars: 5                     # class: F
+  sl_stop_atr_mult: 0.6                 # class: F
+  sl_buffer_atr: 0.2                    # class: F
+  htf_timeframe: "4h"                   # class: B
+  structure_swing_count: 3              # class: F
+  structure_swing_lookback: 3           # class: F
+  tp_r_multiples: [1.0, 2.0, 3.0, 5.0]  # class: B
+  oi_stale_ms: 90000                    # class: E
+  # source: 3 x live-OI poll interval (30s). See app/data/derivatives.py
+  # 'HYBRID OPEN-INTEREST SOURCE' docstring for the full derivation and the
+  # REST weight budget check (20 symbols @ 30s = 40 weight/min, ~1.7% of the
+  # 2400 weight/min IP budget).
+
+s5_oi_regime:
+  oi_percentile_window_days: 30         # class: B
+  regime_shift_window: 12               # class: F
+  regime_low_threshold: 0.20            # class: F
+  regime_high_threshold: 0.80           # class: F
+  oi_noise_band: 0.005                  # class: E
+  funding_veto_z: 3.0                   # class: F
+  sl_buffer_atr: 0.6                    # class: F
+  tp_r_multiples: [1.0, 2.0, 3.0, 4.0]  # class: B
+  entry_mode: retest                    # retest | market
+  min_rr_tp2: 1.8                       # class: F
+  # source: MUST equal risk.yaml's min_rr_tp2 exactly (validate_config.py
+  # enforces this cross-file equality). Duplicated here, not imported from
+  # risk.yaml at runtime, because every strategy's evaluate() receives only
+  # the strategy.yaml section (config/strategy.yaml), never risk.yaml -- see
+  # STRATEGIES_SPEC.md S5 R:R calculation: "require net expected edge (TP2-
+  # based RR after cost) > min_rr_tp2 ... checked here rather than deferred
+  # purely to the risk engine". A single source-of-truth number living in
+  # two files, kept equal by validation, was judged less risky than
+  # widening every strategy's call contract for one field used by one
+  # strategy.
+  oi_stale_ms: 90000                    # class: E
+  # source: 3 x live-OI poll interval (30s). See app/data/derivatives.py
+  # 'HYBRID OPEN-INTEREST SOURCE' docstring for the full derivation and the
+  # REST weight budget check (20 symbols @ 30s = 40 weight/min, ~1.7% of the
+  # 2400 weight/min IP budget).
+
+consensus:                              # spec section 11
+  grade_a_plus_min_conf: 0.82           # class: F
+  grade_a_plus_min_veff: 2.5            # class: F
+  grade_a_plus_min_groups: 3            # class: F
+  grade_a_min_conf: 0.66                # class: F
+  grade_a_min_veff: 1.75                # class: F
+  grade_a_min_groups: 2                 # class: F
+  grade_b_min_conf: 0.55                # class: F
+  grade_b_min_veff: 1.0                 # class: F
