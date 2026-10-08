@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import replace
 from pathlib import Path
 
@@ -222,10 +222,27 @@ class LiveSnapshotCache:
                 cache["derivatives"] = replace(derivatives, **updates)
 
     async def _consume(self):
-        self.ws.set_resync_callback(lambda: asyncio.create_task(self.backfill(list(self.data))))
+        self.ws.set_resync_callback(self._schedule_reconnect_resync)
         async for stream,payload in self.ws.messages():
             try: self._apply_message(stream,payload)
             except Exception as exc: logger.warning("invalid market-data message ignored",extra={"context":{"stream":stream,"error":str(exc)}})
+
+    def _schedule_reconnect_resync(self):
+        symbols=list(self.data)
+        return asyncio.create_task(self._rehydrate_after_reconnect(symbols),name="binance-ws-rest-rehydration")
+
+    async def _rehydrate_after_reconnect(self,symbols):
+        await self.backfill(symbols)
+        ready=[symbol for symbol in symbols if self.is_snapshot_ready(symbol)]
+        stale=[symbol for symbol in symbols if symbol not in set(ready)]
+        logger.warning("ws_reconnect_complete",extra={"context":{"rehydrated":len(ready),"stale":len(stale)}})
+        for symbol in stale:
+            ages=self.diagnostic_ages_ms(symbol,now_ms())
+            available=[age for age in ages.values() if age is not None]
+            logger.warning("ws_reconnect_no_rehydrate",extra={"context":{"symbol":symbol,
+                "last_data_age_ms":max(available) if available else None,
+                "missing_components":self.snapshot_missing_components(symbol)}})
+        return bool(symbols) and not stale
 
     def _apply_message(self,stream,payload):
         symbol=stream.split("@",1)[0].upper(); c=self.data.get(symbol)
@@ -251,6 +268,46 @@ class LiveSnapshotCache:
         missing=set(self.snapshot_missing_components(symbol))
         # Preserve the existing readiness gate; taker flow remains an optional snapshot input.
         return not missing.intersection({"missing=kline","missing=orderbook","missing=derivatives","missing=oi"})
+
+    @staticmethod
+    def _diagnostic_age_ms(as_of_ts_ms,timestamps):
+        valid=[int(value) for value in timestamps if value is not None and int(value)>0]
+        return None if not valid else max(0,int(as_of_ts_ms)-min(valid))
+
+    def diagnostic_ages_ms(self,symbol,as_of_ts_ms=None):
+        """Return observational component ages; these values do not affect readiness."""
+        stamp=now_ms() if as_of_ts_ms is None else int(as_of_ts_ms)
+        c=self.data.get(symbol,{})
+        received=c.get("received",{})
+        lower=symbol.lower()
+        five=c.get("klines",{}).get("5m")
+        bars=getattr(five,"bars",()) if five is not None else ()
+        kline_stamp=getattr(bars[-1],"close_time_ms",None) if bars else None
+        depth,ticker=c.get("depth"),c.get("ticker")
+        depth_stamp=received.get(f"{lower}@depth20@100ms") or getattr(depth,"event_time_ms",None)
+        ticker_stamp=received.get(f"{lower}@bookTicker") or getattr(ticker,"event_time_ms",None)
+        deriv=c.get("derivatives")
+        deriv_stamps=[]
+        if deriv is not None:
+            for field in ("funding_rate_history","open_interest_history_5m","open_interest_history_15m",
+                          "open_interest_history_1h","open_interest_history_1d",
+                          "long_short_account_ratio_history","taker_long_short_ratio_history"):
+                series=getattr(deriv,field,()) or ()
+                if series: deriv_stamps.append(getattr(series[-1],"event_ts_ms",None))
+            premium=getattr(deriv,"premium_index_current",None)
+            if premium is not None: deriv_stamps.append(getattr(premium,"event_ts_ms",None))
+        trades=c.get("trades") or ()
+        trade_stamp=received.get(f"{lower}@aggTrade")
+        if trade_stamp is None and trades:
+            trade_stamp=max((getattr(row,"trade_time_ms",0) for row in trades),default=0)
+        oi=c.get("oi")
+        return {
+            "kline_age_ms":self._diagnostic_age_ms(stamp,[kline_stamp]),
+            "book_age_ms":self._diagnostic_age_ms(stamp,[depth_stamp,ticker_stamp]),
+            "deriv_age_ms":self._diagnostic_age_ms(stamp,deriv_stamps),
+            "taker_age_ms":self._diagnostic_age_ms(stamp,[trade_stamp]),
+            "oi_age_ms":self._diagnostic_age_ms(stamp,[getattr(oi,"received_ts_ms",None)]),
+        }
 
     def snapshot_missing_components(self,symbol):
         """Return labeled snapshot components that are currently absent or invalid."""
@@ -310,6 +367,7 @@ class SignalBot:
         self.error_notifier=None; self.report_task=None
         self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock()
+        self._cycle_candidates=0; self._cycle_signals=0
         self._boot_started_monotonic=time.monotonic(); self._snapshot_diagnostics={}
 
     async def exchange_info(self):
@@ -379,6 +437,28 @@ class SignalBot:
             context["error"]=str(error)
         context["component_state"]=component_state
         logger.warning("snapshot incomplete; signal evaluation blocked",extra={"context":context})
+
+    def _snapshot_check_context(self,symbol,as_of_ts_ms):
+        cache=self.cache
+        missing_fn=getattr(cache,"snapshot_missing_components",None)
+        missing=missing_fn(symbol) if callable(missing_fn) else ["missing=unknown"]
+        ready_fn=getattr(cache,"is_snapshot_ready",None)
+        ready=bool(ready_fn(symbol)) if callable(ready_fn) else not bool(missing)
+        names={"missing=kline":"kline","missing=orderbook":"book","missing=derivatives":"deriv",
+               "missing=taker_flow":"taker","missing=oi":"oi","missing=backfill":"backfill",
+               "missing=unknown":"unknown"}
+        cache_row=getattr(cache,"data",{}).get(symbol,{})
+        if cache_row.get("error") and "missing=backfill" not in missing:
+            missing=list(missing)+["missing=backfill"]
+        ages_fn=getattr(cache,"diagnostic_ages_ms",None)
+        ages=ages_fn(symbol,as_of_ts_ms) if callable(ages_fn) else {}
+        ws=getattr(cache,"ws",None)
+        return {"symbol":symbol,"ready":ready,
+                "missing":[names.get(item,item.removeprefix("missing=")) for item in missing],
+                "missing_raw":missing,
+                "kline_age_ms":ages.get("kline_age_ms"),"book_age_ms":ages.get("book_age_ms"),
+                "deriv_age_ms":ages.get("deriv_age_ms"),"taker_age_ms":ages.get("taker_age_ms"),
+                "oi_age_ms":ages.get("oi_age_ms"),"ws_connected":bool(getattr(ws,"is_connected",False))}
 
     async def wait_for_snapshot_readiness(self,symbols,timeout_s=90.0,min_ready_count=None):
         deadline=asyncio.get_running_loop().time()+timeout_s
@@ -475,17 +555,42 @@ class SignalBot:
                 cooldown[symbol]=snapshot.as_of_ts_ms+int(self.cfg.risk["cooldown_min"]*60_000-elapsed*1000)
         return RiskState(open_records,daily,cooldown),last,seconds
 
+    def _log_candidate(self,candidate,*,grade,veto,reason,stage):
+        logger.info("candidate",extra={"context":{"symbol":candidate.symbol,
+            "strategy":candidate.strategy_source,"direction":candidate.direction.value,
+            "grade":grade,"veto":veto,"reason":reason,"stage":stage}})
+
     async def evaluate_symbol(self,snapshot,news_state):
-        candidates=generate_candidates_at_snapshot(snapshot,news_state,self.cfg.strategy)
+        try:
+            candidates=generate_candidates_at_snapshot(snapshot,news_state,self.cfg.strategy)
+        except Exception as exc:
+            logger.info("strategy_eval",extra={"context":{"symbol":getattr(snapshot,"symbol","UNKNOWN"),
+                "s1_cand":0,"s2_cand":0,"s3_cand":0,"s4_cand":0,"s5_cand":0,
+                "evaluation_error":f"{type(exc).__name__}: {exc}"}})
+            raise
+        counts=Counter(c.strategy_source for c in candidates)
+        log_symbol=getattr(snapshot,"symbol",None) or (candidates[0].symbol if candidates else "UNKNOWN")
+        logger.info("strategy_eval",extra={"context":{"symbol":log_symbol,
+            **{f"s{i}_cand":counts.get(f"S{i}",0) for i in range(1,6)}}})
+        self._cycle_candidates+=len(candidates)
         for c in candidates:
             await self.repo.insert_candidate_audit(symbol=c.symbol,strategy_source=c.strategy_source,direction=c.direction.value,
                 confidence=c.confidence,event_ts_ms=c.event_ts_ms,snapshot_version=snapshot.snapshot_version,meta=c.meta)
+            self._log_candidate(c,grade="UNASSESSED",veto="NOT_RUN",reason="created",stage="created")
         for (symbol,_direction),(grade,confidence,group) in grade_candidates(candidates,self.cfg.strategy["consensus"]).items():
-            if grade is None: continue
+            grade_label=getattr(grade,"value",grade) if grade is not None else "NONE"
+            if grade is None:
+                for item in group:
+                    self._log_candidate(item,grade=grade_label,veto="NOT_RUN",reason="consensus_grade_missing",stage="rejected")
+                continue
             candidate=group[0]
             veto=run_veto_engine(snapshot=snapshot,news_state=news_state,candidate=candidate,veto_cfg=self.cfg.veto,
                 symbol_tier=self.cfg.symbol_tier(symbol),funding_z=None,btc_trend_direction=None)
             if veto.veto_state.value!="PASS":
+                reason=veto.veto_reason or "; ".join(r.reason or r.guard_name for r in veto.guard_results
+                    if not r.passed and r.action==GuardAction.BLOCK) or "veto_blocked"
+                for item in group:
+                    self._log_candidate(item,grade=grade_label,veto="BLOCK",reason=reason,stage="rejected")
                 for result in veto.guard_results:
                     if not result.passed and result.action == GuardAction.BLOCK:
                         await self.repo.record_veto_block(guard_name=result.guard_name,symbol=symbol,
@@ -494,6 +599,7 @@ class SignalBot:
                 continue
             if veto.max_grade_cap:
                 order={"B":0,"A":1,"A+":2}; grade=min((grade,veto.max_grade_cap),key=lambda g:order.get(g,99))
+                grade_label=getattr(grade,"value",grade)
             state,last_direction,elapsed=await self._risk_state(snapshot)
             violations=check_risk_limits(candidate=candidate,risk_state=state,risk_cfg=self.cfg.risk,
                 as_of_ts_ms=snapshot.as_of_ts_ms,current_date_str=utc_date_str(snapshot.as_of_ts_ms))
@@ -501,17 +607,33 @@ class SignalBot:
             if previous and previous!=candidate.direction.value and since is not None and since<self.cfg.risk["cooldown_min"]*60:
                 violations.append(f"opposite-direction cooldown: last={previous}, candidate={candidate.direction.value}")
             if violations:
+                for item in group:
+                    self._log_candidate(item,grade=grade_label,veto="PASS",reason="risk_limit: "+"; ".join(violations),stage="rejected")
                 logger.info("candidate blocked by risk limits",extra={"context":{"symbol":symbol,"reasons":violations}}); continue
             pair=self.cfg.pair_config(symbol); entry=(candidate.entry_low+candidate.entry_high)/2
             sizing=compute_position_size(assumed_equity_usd=self.equity_usd,risk_per_trade_pct=self.cfg.risk["risk_per_trade_pct"],
                 entry_price=entry,stop_loss=candidate.stop_loss,qty_step=pair["qty_step"],fee_maker_bps=pair["fee_maker_bps"],
                 fee_taker_bps=pair["fee_taker_bps"],depth_usd=min(snapshot.orderbook.bid_depth_5lvl_usd,snapshot.orderbook.ask_depth_5lvl_usd))
-            if sizing.qty<pair["min_qty"]: continue
+            if sizing.qty<pair["min_qty"]:
+                for item in group:
+                    self._log_candidate(item,grade=grade_label,veto="PASS",reason="quantity_below_pair_minimum",stage="rejected")
+                continue
             signal=build_final_signal(candidate=candidate,snapshot=snapshot,grade=grade,confidence_weighted=confidence,
                 veto_outcome=veto,size_units_advisory=sizing.qty,notional_usd_advisory=sizing.notional_usd,
                 expiry_per_grade=self.cfg.risk["expiry_per_grade"],created_ts_ms=snapshot.as_of_ts_ms)
-            if signal.veto_state!="PASS" or not apply_min_rr_gate(signal.rr_tp2,self.cfg.risk["min_rr_tp2"]): continue
+            if signal.veto_state!="PASS":
+                for item in group:
+                    self._log_candidate(item,grade=grade_label,veto="BLOCK",reason=signal.veto_reason or "final_signal_veto",stage="rejected")
+                continue
+            if not apply_min_rr_gate(signal.rr_tp2,self.cfg.risk["min_rr_tp2"]):
+                for item in group:
+                    self._log_candidate(item,grade=grade_label,veto="PASS",reason="minimum_rr_gate",stage="rejected")
+                continue
             await self.repo.insert_signal(signal)
+            self._cycle_signals+=1
+            for item in group:
+                reason="signal_persisted" if item is candidate else "consensus_contributor_to_persisted_signal"
+                self._log_candidate(item,grade=grade_label,veto="PASS",reason=reason,stage="accepted")
             news_label="clear" if not news_state.active_for(symbol) else "events available"
             self.outbox.put_nowait((signal,DeliveryContext(news_label,"connected",snapshot.as_of_ts_ms)))
             self.enqueued_count+=1
@@ -523,14 +645,37 @@ class SignalBot:
         self.oi_task=asyncio.create_task(self._refresh_oi_loop(),name="live-oi-poller")
         self.derivatives_task=asyncio.create_task(self._refresh_derivatives_history_loop(),name="historical-derivatives-refresh")
         interval=float(os.getenv("SIGNAL_EVALUATION_INTERVAL_S","300"))
+        cycle=0; health_window_cycles=0; health_window_candidates=0; health_window_signals=0
+        last_health_report=None
         while not self.stop_event.is_set():
             if self.cache.ws_task.done(): raise RuntimeError("market WebSocket consumer stopped")
+            cycle+=1; cycle_started=time.monotonic()
+            self._cycle_candidates=0; self._cycle_signals=0; ready_count=0
+            logger.info("main_loop_cycle_started",extra={"context":{"cycle":cycle,"symbols":len(self.symbols),"interval_s":interval}})
             stamp=now_ms(); news=self.news_engine.build_news_state(stamp)
             for symbol in self.symbols:
                 if self.stop_event.is_set(): break
+                check=self._snapshot_check_context(symbol,now_ms())
+                logger.info("snapshot_check",extra={"context":check})
+                if check["ready"]: ready_count+=1
                 try: await self.evaluate_symbol(self.cache.get_snapshot(symbol),news)
                 except SnapshotIncompleteError as exc: self._log_snapshot_incomplete(symbol,exc)
                 except Exception as exc: logger.exception("symbol evaluation failed; no signal published",extra={"context":{"symbol":symbol,"error":str(exc)}})
+            cycle_candidates=self._cycle_candidates; cycle_signals=self._cycle_signals
+            health_window_cycles+=1; health_window_candidates+=cycle_candidates; health_window_signals+=cycle_signals
+            duration_ms=int((time.monotonic()-cycle_started)*1000)
+            logger.info("main_loop_tick",extra={"context":{"cycle":cycle,"duration_ms":duration_ms,
+                "ready":ready_count,"total":len(self.symbols),"candidates":cycle_candidates,"signals":cycle_signals}})
+            now_mono=time.monotonic()
+            if last_health_report is None or now_mono-last_health_report>=300.0:
+                ws=getattr(self.cache,"ws",None)
+                reconnects=getattr(ws,"reconnect_count_total",getattr(ws,"_reconnect_count_total",0)) if ws is not None else 0
+                logger.info("loop_health",extra={"context":{"cycles":cycle,"cycles_last_5min":health_window_cycles,
+                    "candidates_last_5min":health_window_candidates,"signals_last_5min":health_window_signals,
+                    "ws_reconnects_total":reconnects,"ws_connected":bool(getattr(ws,"is_connected",False)),
+                    "snapshots_ready":ready_count,"snapshot_total":len(self.symbols)}})
+                health_window_cycles=0; health_window_candidates=0; health_window_signals=0
+                last_health_report=now_mono
             try: await asyncio.wait_for(self.stop_event.wait(),timeout=interval)
             except asyncio.TimeoutError: pass
 

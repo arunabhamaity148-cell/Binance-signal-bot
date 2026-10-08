@@ -98,9 +98,12 @@ class BinanceWebSocketClient:
         self._last_message_ts_ms: dict[str, int] = {}
         self._connected = False
         self._reconnect_count_total = 0
-        self._on_resync_required: Callable[[], None] | None = None
+        self._on_resync_required: Callable[[], object] | None = None
+        self._last_resync_task: asyncio.Task | None = None
+        self._last_connected_monotonic: float | None = None
+        self._last_disconnect_monotonic: float | None = None
 
-    def set_resync_callback(self, callback: Callable[[], None]) -> None:
+    def set_resync_callback(self, callback: Callable[[], object]) -> None:
         """Registered by the snapshot layer: called whenever a
         reconnect completes, signaling that delta-based state (e.g.
         order book) must be re-seeded from a fresh REST snapshot."""
@@ -109,6 +112,20 @@ class BinanceWebSocketClient:
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    @property
+    def reconnect_count_total(self) -> int:
+        """Cumulative disconnect/reconnect attempts since this client started."""
+        return self._reconnect_count_total
+
+    def _log_no_rehydrate(self) -> None:
+        symbols=sorted({stream.split("@",1)[0].upper() for stream in self._streams})
+        now_ms=int(time.time()*1000)
+        for symbol in symbols:
+            stamps=[stamp for stream,stamp in self._last_message_ts_ms.items()
+                    if stream.split("@",1)[0].upper()==symbol]
+            age=max(0,now_ms-max(stamps)) if stamps else None
+            logger.warning("ws_reconnect_no_rehydrate",extra={"context":{"symbol":symbol,"last_data_age_ms":age}})
 
     def feed_health(self, stream: str, as_of_ts_ms: int) -> FeedHealth:
         last = self._last_message_ts_ms.get(stream, 0)
@@ -135,6 +152,21 @@ class BinanceWebSocketClient:
             try:
                 async with websockets.connect(self._stream_url(), ping_interval=20) as ws:
                     self._connected = True
+                    connected_at=time.monotonic()
+                    reconnect_duration_ms=None
+                    if self._last_disconnect_monotonic is not None:
+                        reconnect_duration_ms=int((connected_at-self._last_disconnect_monotonic)*1000)
+                        task=self._last_resync_task
+                        cache_rehydrated=False
+                        if task is not None and task.done():
+                            try: cache_rehydrated=bool(task.result())
+                            except (asyncio.CancelledError,Exception): cache_rehydrated=False
+                        symbols_resubscribed=len({stream.split("@",1)[0].upper() for stream in self._streams})
+                        logger.info("ws_reconnect_recovered",extra={"context":{"symbols_resubscribed":symbols_resubscribed,
+                            "cache_rehydrated":cache_rehydrated,"rehydration_pending":bool(task is not None and not task.done()),
+                            "duration_ms":reconnect_duration_ms,"total":self._reconnect_count_total}})
+                        self._last_disconnect_monotonic=None
+                    self._last_connected_monotonic=connected_at
                     attempt = 0
                     logger.info("websocket connected", extra={"context": {"streams": self._streams}})
                     async for raw in ws:
@@ -156,11 +188,25 @@ class BinanceWebSocketClient:
                 self._reconnect_count_total += 1
                 self._reconnect_tracker.record(time.time())
                 delay = self._backoff_delay_s(attempt)
+                disconnected_at=time.monotonic()
+                connection_duration_ms=(int((disconnected_at-self._last_connected_monotonic)*1000)
+                                         if self._last_connected_monotonic is not None else 0)
+                self._last_disconnect_monotonic=disconnected_at
+                self._last_resync_task=None
+                logger.warning("ws_reconnect_event",extra={"context":{"attempt":attempt,
+                    "total":self._reconnect_count_total,"duration_ms":connection_duration_ms,
+                    "duration_kind":"previous_connection_uptime","error":str(exc)}})
                 logger.warning(
                     "websocket disconnected, reconnecting",
-                    extra={"context": {"attempt": attempt, "delay_s": delay, "error": str(exc)}},
+                    extra={"context": {"attempt": attempt, "total": self._reconnect_count_total,
+                        "duration_ms":connection_duration_ms,"delay_s": delay, "error": str(exc)}},
                 )
                 await asyncio.sleep(delay)
                 if self._on_resync_required is not None:
-                    self._on_resync_required()
+                    result=self._on_resync_required()
+                    if isinstance(result,asyncio.Task): self._last_resync_task=result
+                    elif asyncio.iscoroutine(result): self._last_resync_task=asyncio.create_task(result)
+                    if self._last_resync_task is None: self._log_no_rehydrate()
+                else:
+                    self._log_no_rehydrate()
                 continue

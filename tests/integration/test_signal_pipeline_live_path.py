@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
 import pytest
@@ -71,7 +72,7 @@ async def test_synthetic_market_snapshot_reaches_sqlite_and_telegram_outbox(tmp_
 
 
 @pytest.mark.asyncio
-async def test_veto_blocked_candidate_is_never_persisted_or_enqueued(tmp_path,monkeypatch):
+async def test_veto_blocked_candidate_is_never_persisted_or_enqueued(tmp_path,monkeypatch,caplog):
     import app.bot as bot_module
     cfg=load_all(); repo=SignalRepository(tmp_path/"blocked.db"); await repo.connect()
     sender=_RecordingSender(); bot=SignalBot(cfg,1000.0,rest_client=_ClosedRest(),repository=repo,sender=sender)
@@ -86,12 +87,17 @@ async def test_veto_blocked_candidate_is_never_persisted_or_enqueued(tmp_path,mo
         return Result()
     monkeypatch.setattr(bot_module,"run_veto_engine",blocked)
     try:
-        await bot.evaluate_symbol(snapshot,news)
+        with caplog.at_level(logging.INFO,logger="app.bot"):
+            await bot.evaluate_symbol(snapshot,news)
         async with repo._conn.execute("SELECT COUNT(*) FROM signals") as cur: signals=(await cur.fetchone())[0]
         async with repo._conn.execute("SELECT COUNT(*) FROM candidate_audit") as cur: audits=(await cur.fetchone())[0]
         assert signals==0
         assert audits>=1
         assert bot.enqueued_count==0 and sender.sent==[]
+        assert any(record.getMessage()=="strategy_eval" for record in caplog.records)
+        assert any(record.getMessage()=="candidate" and record.context.get("stage")=="rejected"
+                   and record.context.get("veto")=="BLOCK" and record.context.get("reason")=="test hard block"
+                   for record in caplog.records)
     finally: await bot.shutdown()
 
 
