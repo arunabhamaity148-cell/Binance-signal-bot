@@ -11,7 +11,7 @@ from app.backtest.engine import generate_candidates_at_snapshot, grade_candidate
 from app.config import AppConfig
 from app.core.errors import SnapshotIncompleteError
 from app.core.logging import get_logger
-from app.core.models import Direction, NewsState, TakerFlowState, TimestampedValue
+from app.core.models import Direction, GuardAction, NewsState, TakerFlowState, TimestampedValue
 from app.core.time_utils import now_ms, utc_date_str
 from app.data.binance.models import (RawAggTrade, RawBookTicker, RawDepthSnapshot, RawKline,
     RawLongShortRatio, RawOpenInterest)
@@ -32,6 +32,8 @@ from app.telegram.formatter import DeliveryContext
 from app.telegram.queue import TelegramQueue, build_telegram_limits
 from app.telegram.sender import SendOutcome, TelegramCredentials, TelegramSender
 from app.database.repository import SignalRepository
+from app.telegram.error_notifier import ErrorNotifier
+from app.telegram.reports import run_daily_report_loop
 
 logger = get_logger(__name__)
 _STOP = object()
@@ -84,7 +86,9 @@ class LiveSnapshotCache:
                 ("aggTrade","depth20@100ms","bookTicker","markPrice",*(f"kline_{tf}" for tf in _TIMEFRAMES))]
 
     async def start(self,symbols):
-        self.ws=self.ws_factory(WebSocketClientConfig(self.cfg.system["binance_ws_base_url"]),self._streams(symbols))
+        self.ws=self.ws_factory(WebSocketClientConfig(
+            self.cfg.system["binance_ws_base_url"], binance_env=self.cfg.system["binance_env"]
+        ),self._streams(symbols))
         self.ws_task=asyncio.create_task(self._consume(),name="binance-public-websocket")
 
     async def backfill(self,symbols):
@@ -140,6 +144,25 @@ class LiveSnapshotCache:
             return
         as_of = now_ms() if as_of_ts_ms is None else int(as_of_ts_ms)
         start = as_of - DERIVATIVES_HISTORY_WINDOW_MS
+        # Binance USDⓈ-M published-weight accounting (official market-data docs,
+        # checked 2026-10-08): 20 symbols × /fapi/v1/openInterest weight 1 ×
+        # two polls/min (30 s) = 40 weight/min. The 15-minute history cycle is
+        # 7 × 20 = 140 requests/cycle = 9.333 requests/min averaged: four
+        # /futures/data/openInterestHist calls plus global and taker ratios.
+        # Binance lists IP Weight 0 for those six /futures/data calls (with
+        # separate 1000-requests/5-min IP limits). For /fapi/v1/fundingRate,
+        # Binance documents a shared 500-requests/5-min/IP cap but gives no
+        # numeric IP weight. Therefore total recurring weight is 40 +
+        # (20/15 × unknown fundingRate weight) per minute; exact total is not
+        # computable from published weights. The known subtotal is 40/2400 =
+        # 1.67%, not the total. No other scheduled Binance REST call exists:
+        # evaluation uses cached/WebSocket data and news polling is external.
+        # WebSocket resync repeats a non-periodic backfill burst. Cold boot's
+        # one-time known subtotal is 701 weight: exchangeInfo 1, five klines
+        # × 20 symbols at limit 100 (weight 2 each), depth20 and bookTicker
+        # (weight 2 each), aggTrades limit 500 (weight 20), and openInterest
+        # (weight 1); add 20 fundingRate calls of undocumented numeric weight.
+        # Sources: https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data
         for symbol, cache in self.data.items():
             requests = [
                 ("fundingRate", "funding_rate_history", self.rest.funding_rate(
@@ -154,6 +177,13 @@ class LiveSnapshotCache:
                     symbol, "1d", limit=30, start_time_ms=start, end_time_ms=as_of), open_interest_to_timestamped),
                 ("globalLongShortAccountRatio", "long_short_account_ratio_history", self.rest.global_long_short_account_ratio(
                     symbol, "5m", limit=500, start_time_ms=start, end_time_ms=as_of), long_short_ratio_to_timestamped),
+                # NOTE: /futures/data/takerlongshortRatio history is refreshed here
+                # for completeness and future cross-check capability, but is NOT
+                # currently consumed by any strategy's gating logic. S3 and S5 use
+                # the realtime aggTrade-derived taker_buy_ratio instead (different
+                # semantics: 5-min aggregated global ratio vs per-message flow).
+                # Retained deliberately so that if a future strategy consumes it,
+                # the series stays fresh. See docs/KNOWN_UNCERTAINTIES.md.
                 ("takerlongshortRatio", "taker_long_short_ratio_history", self.rest.taker_long_short_ratio(
                     symbol, "5m", limit=500, start_time_ms=start, end_time_ms=as_of), long_short_ratio_to_timestamped),
             ]
@@ -230,11 +260,14 @@ class SignalBot:
     def __init__(self,cfg:AppConfig,equity_usd:float,*,rest_client=None,ws_factory=BinanceWebSocketClient,
                  cache_factory=LiveSnapshotCache,repository=None,sender=None):
         self.cfg,self.equity_usd=cfg,equity_usd
-        self.rest=rest_client or BinanceRestClient(RestClientConfig(cfg.system["binance_base_url"]))
+        self.rest=rest_client or BinanceRestClient(RestClientConfig(
+            cfg.system["binance_base_url"], binance_env=cfg.system["binance_env"]
+        ))
         self.ws_factory,self.cache_factory=ws_factory,cache_factory
         self.repo=repository or SignalRepository(Path(cfg.config_dir).parent/cfg.system["database_paths"]["sqlite_path"])
         self.sender=sender; self.telegram_queue=None; self.cache=None; self.symbols=[]
         self.news_engine=None; self.news_collector=None; self.news_sources=[]; self.news_task=None
+        self.error_notifier=None; self.report_task=None
         self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock()
 
@@ -249,6 +282,22 @@ class SignalBot:
             except Exception as exc:
                 entries.append({"symbol":str(row.get("symbol","<unknown>")),"invalid_reason":f"malformed exchange filters: {type(exc).__name__}: {exc}"})
         return entries
+
+    async def start_error_notifier(self):
+        """Attach the asynchronous root-log handler before public-feed startup."""
+        if self.error_notifier is not None:
+            return
+        raw=os.getenv("TELEGRAM_DRY_RUN","true").strip().lower()
+        if raw not in {"true","false","1","0","yes","no"}:
+            raise ValueError("TELEGRAM_DRY_RUN must be true/false")
+        dry_run=raw in {"true","1","yes"}
+        token=os.getenv("TELEGRAM_BOT_TOKEN",""); error_chat=os.getenv("TELEGRAM_ERROR_CHAT_ID","")
+        if not dry_run and (not token or not error_chat):
+            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_ERROR_CHAT_ID are required when TELEGRAM_DRY_RUN=false")
+        await self.repo.connect()
+        self.error_notifier=ErrorNotifier(self.repo,bot_token=token,chat_id=error_chat,dry_run=dry_run,
+            telegram_limits=build_telegram_limits(self.cfg.system))
+        await self.error_notifier.start()
 
     async def start_market_data(self,symbols):
         self.symbols=list(symbols); self.cache=self.cache_factory(self.cfg,self.rest,self.ws_factory)
@@ -280,6 +329,9 @@ class SignalBot:
         self.news_engine=NewsEngine(self.cfg.news_sources); self.news_collector=NewsCollector(build_retry_config(self.cfg.news_sources))
         self.news_sources=build_source_configs(self.cfg.news_sources); self.stop_event=self.stop_event or asyncio.Event()
         self.news_task=asyncio.create_task(self._news_loop(),name="news-collectors")
+        self.report_task=asyncio.create_task(run_daily_report_loop(
+            self.repo,self.sender,self.cfg.risk["paper_trading_assumptions"],self.stop_event
+        ),name="daily-report-2359-ist")
 
     async def _news_loop(self):
         while not self.stop_event.is_set():
@@ -351,7 +403,13 @@ class SignalBot:
             candidate=group[0]
             veto=run_veto_engine(snapshot=snapshot,news_state=news_state,candidate=candidate,veto_cfg=self.cfg.veto,
                 symbol_tier=self.cfg.symbol_tier(symbol),funding_z=None,btc_trend_direction=None)
-            if veto.veto_state.value!="PASS": continue
+            if veto.veto_state.value!="PASS":
+                for result in veto.guard_results:
+                    if not result.passed and result.action == GuardAction.BLOCK:
+                        await self.repo.record_veto_block(guard_name=result.guard_name,symbol=symbol,
+                            strategy_source=candidate.strategy_source,event_ts_ms=snapshot.as_of_ts_ms,
+                            message=result.reason or "blocked")
+                continue
             if veto.max_grade_cap:
                 order={"B":0,"A":1,"A+":2}; grade=min((grade,veto.max_grade_cap),key=lambda g:order.get(g,99))
             state,last_direction,elapsed=await self._risk_state(snapshot)
@@ -398,11 +456,14 @@ class SignalBot:
             if self._closed: return
             self._closed=True
             if self.stop_event: self.stop_event.set()
-            for task in (self.news_task,self.oi_task,self.derivatives_task,self.cache.ws_task if self.cache else None):
+            for task in (self.news_task,self.oi_task,self.derivatives_task,self.report_task,self.cache.ws_task if self.cache else None):
                 if task and not task.done(): task.cancel()
             await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
             if self.outbox_task and not self.outbox_task.done():
                 await self.outbox.join(); self.outbox.put_nowait(_STOP); await self.outbox.join(); await self.outbox_task
+            if self.error_notifier is not None:
+                try: await self.error_notifier.stop()
+                except Exception as exc: logger.warning("error notifier shutdown failed",extra={"context":{"error_type":type(exc).__name__}})
             for obj in (self.news_collector,self.sender,self.repo,self.rest):
                 if obj is not None:
                     try: await obj.close()

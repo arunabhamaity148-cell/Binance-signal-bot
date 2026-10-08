@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import uuid
 from datetime import datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 
@@ -34,6 +35,8 @@ class SignalRepository:
         self._conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
+        if self._conn is not None:
+            return
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self._db_path)
         await self._conn.execute("PRAGMA journal_mode=WAL")
@@ -288,6 +291,93 @@ class SignalRepository:
         except Exception as exc:  # noqa: BLE001
             await conn.rollback()
             raise DatabaseWriteError(f"failed to record manual outcome for {signal_id}: {exc}") from exc
+
+    async def record_veto_block(
+        self, *, guard_name: str, symbol: str, strategy_source: str,
+        event_ts_ms: int, message: str,
+    ) -> None:
+        if guard_name not in {f"G{i}" for i in range(1, 16)}:
+            raise ValueError(f"invalid guard_name: {guard_name!r}")
+        await self._insert_runtime_event(
+            event_type="VETO_BLOCK", created_ts_ms=event_ts_ms,
+            guard_name=guard_name, symbol=symbol, strategy_source=strategy_source,
+            message=message,
+        )
+
+    async def record_error_event(
+        self, *, severity: str, source: str, exception_type: str,
+        message: str, event_ts_ms: int | None = None,
+    ) -> None:
+        if severity not in {"ERROR", "CRITICAL"}:
+            raise ValueError("severity must be ERROR or CRITICAL")
+        await self._insert_runtime_event(
+            event_type="ERROR", created_ts_ms=now_ms() if event_ts_ms is None else int(event_ts_ms),
+            severity=severity, source=source, exception_type=exception_type, message=message,
+        )
+
+    async def _insert_runtime_event(self, **event) -> None:
+        conn = self._require_conn()
+        try:
+            await conn.execute(
+                "INSERT INTO runtime_events (event_id,event_type,created_ts_ms,severity,guard_name,"
+                "symbol,strategy_source,source,exception_type,message) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (uuid.uuid4().hex, event["event_type"], event["created_ts_ms"],
+                 event.get("severity"), event.get("guard_name"), event.get("symbol"),
+                 event.get("strategy_source"), event.get("source"), event.get("exception_type"),
+                 str(event["message"])[:4000]),
+            )
+            await conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            await conn.rollback()
+            raise DatabaseWriteError(f"failed to record runtime event: {exc}") from exc
+
+    async def get_daily_report_data(self, *, start_ts_ms: int, end_ts_ms: int) -> dict:
+        """Aggregate persisted signals, guard blocks, logged errors, and manual outcomes."""
+        conn = self._require_conn()
+        async def grouped(query: str, column: str) -> dict[str, int]:
+            async with conn.execute(query, (start_ts_ms, end_ts_ms)) as cursor:
+                return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
+
+        async with conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE created_ts_ms >= ? AND created_ts_ms < ?",
+            (start_ts_ms, end_ts_ms),
+        ) as cursor:
+            row = await cursor.fetchone()
+        signals_total = int(row[0] or 0)
+        signals_by_grade = await grouped(
+            "SELECT grade,COUNT(*) FROM signals WHERE created_ts_ms >= ? AND created_ts_ms < ? GROUP BY grade", "grade")
+        signals_by_strategy = await grouped(
+            "SELECT strategy_source,COUNT(*) FROM signals WHERE created_ts_ms >= ? AND created_ts_ms < ? GROUP BY strategy_source", "strategy")
+        signals_by_symbol = await grouped(
+            "SELECT symbol,COUNT(*) FROM signals WHERE created_ts_ms >= ? AND created_ts_ms < ? GROUP BY symbol", "symbol")
+        vetoes_by_guard = await grouped(
+            "SELECT guard_name,COUNT(*) FROM runtime_events WHERE event_type='VETO_BLOCK' AND created_ts_ms >= ? AND created_ts_ms < ? GROUP BY guard_name", "guard")
+        errors_by_severity = await grouped(
+            "SELECT severity,COUNT(*) FROM runtime_events WHERE event_type='ERROR' AND created_ts_ms >= ? AND created_ts_ms < ? GROUP BY severity", "severity")
+
+        async def outcome_aggregate(where: str = "", params: tuple = ()) -> dict:
+            async with conn.execute(
+                "SELECT COUNT(*),COALESCE(SUM(realized_r),0),"
+                "SUM(CASE WHEN realized_r>0 THEN 1 ELSE 0 END),"
+                "SUM(CASE WHEN realized_r<0 THEN 1 ELSE 0 END),"
+                "SUM(CASE WHEN realized_r=0 THEN 1 ELSE 0 END),"
+                "COALESCE(SUM(CASE WHEN realized_r>0 THEN realized_r ELSE 0 END),0),"
+                "COALESCE(SUM(CASE WHEN realized_r<0 THEN realized_r ELSE 0 END),0) "
+                f"FROM outcomes {where}", params,
+            ) as cursor:
+                values = await cursor.fetchone()
+            return {"count": int(values[0] or 0), "realized_r": float(values[1] or 0.0),
+                    "wins": int(values[2] or 0), "losses": int(values[3] or 0),
+                    "flats": int(values[4] or 0), "gross_wins_r": float(values[5] or 0.0),
+                    "gross_losses_r": float(values[6] or 0.0)}
+
+        today = await outcome_aggregate(
+            "WHERE recorded_ts_ms >= ? AND recorded_ts_ms < ?", (start_ts_ms, end_ts_ms))
+        cumulative = await outcome_aggregate()
+        return {"signals_total": signals_total, "signals_by_grade": signals_by_grade,
+                "signals_by_strategy": signals_by_strategy, "signals_by_symbol": signals_by_symbol,
+                "vetoes_by_guard": vetoes_by_guard, "errors_by_severity": errors_by_severity,
+                "outcomes_today": today, "cumulative_outcomes": cumulative}
 
     @staticmethod
     def _row_to_signal_row(row) -> SignalRow:

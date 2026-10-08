@@ -68,7 +68,8 @@ def test_advisory_warning_exact_text():
     sig = Signal(**_kwargs())
     assert sig.advisory_warning == (
         "ADVISORY ONLY — VERIFY ACCOUNT SIZING MANUALLY. No account state, "
-        "fill, leverage, or liquidation distance is observed."
+        "fill, leverage, or liquidation distance is observed.\n"
+        "LEVERAGE NOT SET BY BOT. Set leverage yourself on the exchange."
     )
 
 
@@ -180,4 +181,4 @@ def test_advisory_warning_appears_in_formatted_telegram_message():
     sig = Signal(**_kwargs())
     ctx = DeliveryContext(news_state_label="healthy", binance_state_label="healthy", as_of_ts_ms=1000)
     message = format_signal_message(sig, ctx)
-    assert ADVISORY_WARNING in message
+    assert all(f"⚠️ {line}" in message for line in ADVISORY_WARNING.splitlines())

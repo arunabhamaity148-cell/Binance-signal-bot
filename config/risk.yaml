@@ -1,9 +1,21 @@
 # risk.yaml
 
-risk_per_trade_pct: 0.5                 # class: E, conservative default
+# Actual sizing uses ASSUMED_ACCOUNT_EQUITY_USD from the environment.
+# Set that env var to 2400 to match paper_trading_assumptions.account_capital_usd.
+# Bot NEVER sets leverage; assumed_leverage is documented for the operator.
+risk_per_trade_pct: 0.5                 # class: E, conservative default; unchanged
 min_rr_tp2: 1.8                         # class: F
 tp_r_multiples_default: [1.0, 2.0, 3.0, 5.0]   # class: B, overridden per-strategy where noted
 partial_exit_fractions: [0.40, 0.30, 0.20, 0.10]   # class: E, per spec section 21
+
+# Reporting assumptions only; these do not override the engine's risk_per_trade_pct.
+paper_trading_assumptions:
+  account_capital_inr: 200000        # class: E (operator-provided)
+  account_capital_usd: 2400          # class: E (approximate @ 83 INR/USD)
+  risk_per_trade_inr: 5000           # class: E (operator-provided)
+  risk_per_trade_pct: 2.5            # class: E (5000 / 200000 * 100)
+  assumed_leverage: 10                # class: E — ADVISORY ONLY, bot does NOT set leverage
+  mode: paper                         # class: E
 
 max_concurrent: 5                       # class: E
 max_daily_signals: 12                   # class: E

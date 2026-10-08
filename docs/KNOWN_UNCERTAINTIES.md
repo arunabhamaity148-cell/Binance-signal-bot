@@ -1,203 +1,79 @@
-# KNOWN_UNCERTAINTIES.md
+# Known uncertainties (current checkout)
 
-This document exists so that nothing in this design is mistaken for a
-validated claim. Per spec §32 ("DO NOT LIE"), everything listed here
-is an open question, not a settled fact.
+This is an as-built record of what remains unvalidated. Unit and integration tests use deterministic fixtures; passing them does not establish market calibration, live reliability, or profitability. Values are not adjusted by this documentation update.
 
-## 1. Every threshold classed [F] throughout the spec documents
+## 1. Class E/F thresholds and strategy parameters
 
-There are roughly 60+ individual numeric thresholds marked class F
-(arbitrary/unvalidated) across `STRATEGIES_SPEC.md`, `VETO_SPEC.md`,
-and `CONFIG_SCHEMAS.md` — swing lookbacks, ATR multiples, percentile
-cutoffs, z-score thresholds, grade boundaries, half-lives, and so on.
-**None of these have been empirically validated against this specific
-20-pair universe.** They are reasonable starting points drawn from
-common technical-analysis and market-microstructure conventions, not
-outputs of a calibration process. The roadmap (P2) requires
-recalibration via backtest + shadow-mode before any of them can be
-trusted or relabeled class C.
+Many values in `config/strategy.yaml`, `config/veto.yaml`, `config/risk.yaml`, `config/system.yaml`, and `config/news_sources.yaml` are explicitly class E/F engineering assumptions. They have not been calibrated against representative Binance USDⓈ-M history for the configured 20-symbol universe. Original design-spec files referred to by early notes are not part of this checkout; the shipped YAML and code are the source of truth for current behavior.
 
-## 2. Effective-vote consensus grade thresholds (§11)
+## 2. Consensus grade boundaries
 
-The A+/A/B boundaries (`weighted confidence >= 0.82`, `V_eff >= 2.5`,
-etc.) are explicitly called "initial hypothesis, subject to shadow-mode
-validation" in the spec itself. There is no evidence yet that these
-particular cutoffs separate genuinely higher-quality setups from lower
-ones. It's entirely possible the effective-vote formula itself needs
-revision after seeing real distributions of `V_eff` and confidence
-across the 5 strategies.
+The grade boundaries, vote weights, confidence cutoffs, and effective-vote formula in the shipped strategy config have deterministic tests, but have not been shown to separate higher-quality from lower-quality setups on out-of-sample or live observations.
 
-## 3. Per-symbol tier thresholds (depth, spread, slippage)
+## 3. Depth, spread, and execution-quality thresholds
 
-The `majors`/`mid_caps`/`small_caps` USD-depth and bps-spread
-thresholds in G3/G4/G11 are placeholder estimates, not measurements.
-Actual order-book depth on Binance USDⓈ-M for pairs like SUIUSDT,
-ARBUSDT, TONUSDT varies meaningfully by time of day and market
-conditions; these numbers need to be derived from actual sampled
-order-book data before they can be trusted to correctly distinguish
-"tradable" from "too thin," in either direction (too loose risks bad
-fills; too tight risks blocking every legitimate signal on smaller
-pairs).
+Tier-specific depth/spread thresholds and execution-quality decisions are configured in the shipped risk/veto files. Order-book depth and spread vary by symbol, session, and market regime. No representative exchange sample has been used to validate that the tiers reliably distinguish executable from unsafe conditions.
 
-## 4. News source URLs and free-tier availability
+## 4. News source URLs and access terms
 
-`config/news_sources.yaml` in `CONFIG_SCHEMAS.md` contains placeholder
-URLs. Specifically:
-- Reuters/Bloomberg "public" RSS feed availability and terms change
-  over time; whether a genuinely free, ToS-compliant feed currently
-  exists must be re-verified at implementation time, not assumed from
-  this design document.
-- CryptoPanic's free-tier terms and rate limits should be re-checked
-  at implementation time.
-- Binance's official announcement feed format (RSS vs JSON vs
-  HTML-only) should be confirmed against current developer docs.
+`config/news_sources.yaml` still contains literal placeholder strings, including `"<official Fed RSS URL>"`, `"<CoinDesk RSS URL>"`, and `"<GDELT public API endpoint>"`. These are not verified feeds. The same config has provisional source names/formats and category half-lives. Operators must verify actual endpoints, terms, format, and free-tier/rate limits before relying on this subsystem. No replacement URLs are inferred here.
 
-## 5. News category half-lives
+## 5. News impact decay and classification
 
-The half-life table (regulatory: 6h, hack: 2h, etc.) is a reasonable
-first approximation but is not derived from measured price-impact
-decay curves for this asset universe. It's plausible some categories
-decay faster or slower than modeled, especially for smaller-cap assets
-where a single news item can have outsized and longer-lasting impact
-relative to majors.
+The configured category half-lives, credibility weights, parsing, entity mapping, corroboration, and impact/severity classification are implementation choices. They have not been evaluated against measured market reaction and may misclassify or miss material events.
 
-## 6. Fee/slippage cost model completeness
+## 6. Slippage and latency-cost calibration
 
-The cost model (fees + spread + slippage + latency) as described is
-directionally correct but its slippage sub-model
-(`estimated_slippage_bps(symbol, notional)`) needs an actual
-implementation choice (e.g., linear impact vs. square-root impact vs.
-empirical fill-based estimation from historical order-book snapshots)
-that hasn't been fixed yet. Different reasonable choices could produce
-meaningfully different R:R numbers for the same candidate, especially
-on lower-liquidity pairs.
+A concrete model is implemented, replacing the earlier “choice not fixed” note. `estimate_slippage_bps` is linear in `notional_usd / depth_usd`, at 1 bp per 10% of depth consumed, capped at 50 bps; missing/non-positive depth falls back to 5 bps. Backtest latency slippage is linear at 0.5 bps/second, capped at 25 bps, and the engine's default assumed latency is 2 seconds. These values are not calibrated from observed executions or order-book replays. Live signal costing uses the current-snapshot model and does not charge the backtest-only latency assumption.
 
-## 7. Structure/swing detection robustness
+## 7. Swing/structure detection
 
-The HH/HL and LH/LL structure detection used in S4, and swing-high/low
-detection used in S1, are defined at a conceptual level
-("each swing high > prior swing high") but swing detection algorithms
-are notoriously sensitive to the exact pivot-detection method (fixed
-lookback vs. fractal vs. ZigZag-style). The spec doesn't yet pin down
-which specific algorithm implements "swing," and different choices will
-produce different candidate counts and quality. This needs to be fixed
-concretely during implementation and then treated as a stable,
-versioned definition (not silently tweaked later).
+Swing highs/lows are implemented in `app/core/math.py` as symmetric fixed-lookback pivots: a bar is a pivot when it is the high/low extreme across `lookback` bars on both sides. S1, S3, and S4 use this shared definition (with their current lookback settings). This is concrete in code, but the pivot convention's robustness, lag, tie handling, and predictive usefulness have not been validated out of sample.
 
-## 8. Correlated-cluster definition for exposure capping
+## 8. Correlated-cluster coverage
 
-`correlated_clusters` in `risk.yaml` currently defines only one
-explicit cluster (BTC/ETH/SOL as "majors_beta"). Whether other pairs in
-the 20-symbol universe exhibit high enough correlation to warrant
-clustering (e.g., L1s like NEAR/APT/SUI/ATOM moving together in
-alt-season conditions) is an empirical question not yet answered by
-this design.
+The configured explicit cluster currently covers BTC/ETH/SOL (`majors_beta`). Other configured pairs are not grouped unless listed; correlation regimes among altcoins have not been measured for this risk cap.
 
-## 9. Whether 20 pairs at these strategies' frequency will hit rate
-limits in practice
+## 9. REST request load and OI refresh paths
 
-`rate_limit_budget.rest_weight_per_minute` in `system.yaml` is set
-conservatively, but actual REST call volume depends on how much of the
-derivatives data (funding/OI/ratios, several of which have no
-WebSocket equivalent and must be polled) is needed per symbol per
-strategy-evaluation cycle. This needs to be measured against real
-polling intervals during implementation, not assumed to fit from the
-design alone.
+Current OI and historical series are distinct:
 
-## 10. Backtest realism vs. live execution
+- The live current-OI endpoint is polled every 30 seconds per symbol (about 40 raw requests/minute if all 20 symbols are active). The module's stated `/fapi/v1/openInterest` weight of one gives an estimated 40 weight/minute for this path alone, about 1.7% of the configured 2400 weight/minute budget.
+- The 15-minute historical refresh requests funding, OI history at 5m/15m/1h/1d, global-account long/short ratio, and taker long/short ratio: 7 calls per symbol, or 140 raw calls per cycle for 20 symbols (about 9.3 raw calls/minute averaged over 15 minutes). Older history is retained when 24-hour-window responses are merged.
+- Startup performs REST backfill, and WebSocket resync can request it again.
 
-Even a well-built cost- and slippage-aware backtest cannot fully
-capture live execution reality (queue position for limit orders,
-actual fill probability under real market stress, real Telegram
-delivery latency to a human who then manually executes). The
-acceptance gates in spec §22 validate the backtest's internal
-consistency and the strategies' historical edge under modeled costs —
-they are explicitly **not** a claim that live results will match, which
-is why spec §31 requires distinguishing "OFFLINE VERIFIED" from "LIVE
-VERIFIED" and why paper/shadow soak status must be reported separately
-in the final release report.
+The official Binance USDⓈ-M market-data documentation (checked 2026-10-08) lists IP Weight 0 for `/futures/data/openInterestHist`, `/futures/data/globalLongShortAccountRatio`, and `/futures/data/takerlongshortRatio`, with a separate 1000-requests/5-minute IP limit for these data endpoints. For `/fapi/v1/fundingRate`, the documentation states a shared 500-requests/5-minute/IP cap with `/fapi/v1/fundingInfo` but gives no numeric IP weight. Consequently, the documented recurring weighted subtotal is **40 weight/minute** from current OI; the six zero-weight history calls add no documented IP weight, while funding contributes `(20/15) × its undocumented per-call weight` per minute. The exact aggregate weight cannot be computed from the published values. The known subtotal is `40/2400 = 1.6667%` of the configured budget; that is **not** a total-utilization figure and is insufficient to classify the complete load as comfortable. Do not convert the 140-call count into a weight or percentage.
 
-## 11. Class-E gate rejection frequency across S1/S2/S5
+Reserved but unused: `/futures/data/takerlongshortRatio` history is refreshed every 15 minutes but not consumed by any current strategy. Retained for future cross-check capability. If no strategy consumes it after 6 months of operation, remove it.
 
-Found during Batch 2/3 implementation and review (post-dates the
-original Phase 1 design; items 1-10 above were written before any
-strategy code existed). Recorded here because it is a pattern across
-multiple strategies, not a single strategy's quirk, and because the
-decision to leave it alone was explicit and deliberate, not an
-oversight.
+Other recurring Binance REST paths are absent in the inspected runtime loops: evaluation uses WebSocket/cache data and news polling uses external sources. WebSocket resync can trigger a non-periodic full REST backfill. At cold boot, the current 20-symbol configuration makes 100 kline calls (`limit=100`, weight 2 each), 20 depth calls at limit 20 (weight 2), 20 book-ticker calls (weight 2), 20 aggTrades calls at limit 500 (weight 20), 20 current-OI calls (weight 1), and one exchangeInfo call (weight 1): **701 documented weight once**, plus 20 funding-rate calls whose numeric weight is not published. The six `/futures/data/*` calls per symbol have published weight zero. This boot/resync burst is not per-minute recurring load. The `app/data/derivatives.py` module comment still refers to 5-minute historical gap-fill; the active `app.bot.SignalBot` history loop is 15 minutes and is authoritative for this checkout.
 
-**The three observations:**
+## 10. Backtest realism and out-of-sample evidence
 
-- **S1** (Batch 2.5): on a realistic BTC fixture (ATR(14) ≈ $202, ≈20
-  bps stop distance), raw R:R at TP2 is exactly 2.0000 (confirming the
-  entry-midpoint R convention is correctly implemented), but post-cost
-  R:R lands at **1.693**, below `min_rr_tp2 = 1.8` (class F,
-  `config/risk.yaml`).
-- **S2** (Batch 3): `sl_boundary_buffer_atr = 0.1` (class F) produces a
-  stop distance of only 0.1x ATR. Against `min_stop_cost_multiple =
-  3.0` (class E, `config/strategy.yaml`), S2's stop only clears the
-  safety filter when ATR is roughly **6-7x** the ATR level used in the
-  S1 realistic fixture — i.e., only in a materially elevated-volatility
-  regime (~136 bps ATR in the passing test fixture, vs. ~20 bps for
-  S1's realistic case).
-- **S5** (Batch 3): fixed `tp_r_multiples = [1.0, 2.0, 3.0, 4.0]` caps
-  raw R:R at TP2 at exactly 2.0 by construction. After the 2x maker
-  round-trip cost, clearing `min_rr_tp2 = 1.8` requires ATR ≳ **93
-  bps** on a $100k-scale BTC fixture (`sl_buffer_atr = 0.6`, class F).
+The JSONL harness can replay bars with order-book, taker-flow, derivative, and higher-timeframe context; CSV runners carry OHLCV only. The current backtest includes latency cost and seeded bar-level limit-fill probability, but neither can model queue position, true order matching, partial execution, intrabar path, network variation, or human reaction. CSV/JSONL outputs are not live fill results. The walk-forward runner keeps shipped config fixed and reports holdout without fitting; this is not evidence of strategy profitability or a broad independent OOS study.
 
-**Shared cause:** all three strategies compute stops as a fixed
-multiple of ATR, and R:R is graded post-cost from the entry midpoint
-(per the R CONVENTION documented in `app/strategies/base.py`, itself a
-Batch 2/3 correction — see the Batch 2/3 review history for the
-R-convention bug this fixed). When the ATR-based stop distance is
-small in absolute (price) terms —
-which happens at "normal" volatility on a high-priced asset like
-BTC — the fixed round-trip cost (2x maker fee, or maker+taker+slippage
-for sizing) becomes a large fraction of R. Tight stops on high-priced
-assets inflate cost drag as a fraction of R; only a wider ATR (higher
-realized volatility) gives the stop enough absolute room for the fixed
-cost to stay a small fraction of it.
+## 11. Fixture observations for S1/S2/S5 cost gates
 
-**The open question for shadow mode:** What fraction of the time do
-S1, S2, and S5 clear their class-E/F gates on real market data, broken
-down per pair (majors vs. mid-caps vs. small-caps have very different
-price levels and so very different absolute-vs-relative cost dynamics)
-and per volatility regime? If the answer is "rarely, except during
-elevated-volatility windows," that may be an acceptable and even
-desirable property (these strategies would then only fire when
-conditions genuinely favor them) — or it may indicate the class-F
-stop-construction parameters (`sl_boundary_buffer_atr`,
-`sl_buffer_atr`, `tp_r_multiples`) are miscalibrated for the class-E
-safety floor they're being measured against. Shadow-mode data is
-required to distinguish these two explanations; neither can be
-determined from synthetic fixtures or reasoning about the formulas
-alone.
+These are **fixture observations or formula estimates**, not numeric acceptance assertions that guarantee the same values across live data:
 
-**Explicit statement — this is NOT to be resolved by tuning:** Neither
-the class-E filters (`min_stop_cost_multiple`, entry-zone-width cap)
-nor the class-F strategy parameters (`sl_boundary_buffer_atr`,
-`sl_buffer_atr`, `tp_r_multiples`, `min_rr_tp2`) should be adjusted in
-response to this observation without shadow-mode evidence. Doing so
-now — before any real distribution exists — would be look-ahead bias:
-tuning a threshold to make a known synthetic fixture pass is fitting
-to the test, not to reality. This pattern is deliberately left as-is
-pending real data.
+- **S1:** The current `test_pipeline_e2e.py` realistic fixture recomputes to post-cost TP2 R:R **1.731179** against configured `min_rr_tp2 = 1.8`; the fixture test asserts the gate result agrees with calculated R:R, not the exact 1.731179 value. Earlier notes' $202 ATR / 20 bps and 1.693 R:R describe a superseded fixture. The current fixture's ATR(14) is approximately $314 at a price near $100,084 (about 31.3 bps); exact TP geometry is covered separately by strategy tests.
+- **S2:** The current pre-breakout fixture used by `test_s2_volatility_compression.py` measures ATR(14) about $1,432 at $99,700 (about 143.6 bps). Its test verifies the candidate clears the configured 3x stop-cost filter; it does not assert an exact minimum ATR boundary. The module's older approximate 136 bps / 20 bps comparison is not the current S1/S2 fixture pair.
+- **S5:** The current $100,000-scale fixture measures ATR(14) about $2,306 (about 230.6 bps) and its test verifies that the candidate clears the configured TP2 R:R gate. The roughly 93 bps figure is a formula-derived approximate boundary for 0.6 ATR stop distance, two 2-bps maker fees, and a 1.8 R:R floor; the suite does not binary-search or assert that boundary.
 
-**Relationship to item 1 above:** this is related to, but distinct
-from, the general "all class-F thresholds are unvalidated" statement
-in item 1. Item 1 says the *values themselves* haven't been
-calibrated. This item says something more specific: there's a
-*structural interaction* between three strategies' stop-construction
-math and two class-E safety floors that makes rejection frequency
-correlate with volatility regime in a way that's currently unmeasured.
-Resolving item 1 (calibrating individual values) does not by itself
-answer this item's question (what the *interaction* between several
-values produces across real market conditions) — they need to be
-tracked separately during shadow-mode review.
+These observations highlight interactions between ATR-based stop geometry, fees, and cost filters; they do not establish how often any strategy will pass on real data. Do not tune class E/F parameters to make synthetic fixtures pass or to match these observations. Real distribution evidence by symbol and regime is still required.
+
+## 12. Paper report assumptions and manual outcomes
+
+The report's assumed INR conversion is ₹5,000 per R, but the existing top-level `risk_per_trade_pct` remains 0.5%; advisory sizing uses `ASSUMED_ACCOUNT_EQUITY_USD`. The new descriptive paper block separately states 2.5% of ₹200,000. These figures are not reconciled by the software. The daily report multiplies manually recorded `realized_r` by ₹5,000 and must not be interpreted as actual account P&L, exchange-reconciled P&L, or evidence that advisory sizing used ₹5,000 risk per R. Outcomes are operator-entered, one per signal, and are not inferred from fills.
+
+## 13. Daily report and error-notifier operation
+
+The daily report is scheduled for 23:59 in `Asia/Kolkata` by a process-local asyncio task. It uses SQLite rows and is not independently persisted as a scheduled-job record; missed schedules during downtime are not replayed. Live timing, restart recovery, and Telegram delivery have not been verified. Error notification throttling is also process-local (one notification attempt per five minutes) and resets on restart. A bounded 512-record queue avoids blocking the logging caller; overflow is written to stderr and may mean an event was not persisted. The notifier starts after config, assumed-equity, and trading-credential checks, so failures before that point are outside its event capture window. Database/Telegram failure handling is fail-soft, not a durable alert guarantee.
+
+## 14. Testnet data suitability
+
+`binance_env: testnet` switches public market-data URLs and produces an explicit warning. Testnet market data can be sparse and does not validate mainnet liquidity, feed reliability, strategy quality, or real-world fills. Testnet output must not be used as live trading signals. No external testnet session has been verified here.
 
 ---
 
-None of the above blocks producing a correct, fail-closed,
-signal-only system. It blocks claiming that system is *calibrated* or
-*proven profitable* — claims this design deliberately avoids making,
-per spec §32.
+The current evidence is bounded: source inspection, deterministic tests, configuration checks, and static scans. Live Binance/news/Telegram validation, paper-soak evidence, robust OOS performance, threshold calibration, and profitability are **NOT TESTED / NOT VERIFIED**. No broader claim is implied by test success.

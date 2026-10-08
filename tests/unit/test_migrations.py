@@ -12,7 +12,7 @@ async def test_apply_migrations_on_fresh_db(tmp_path):
     conn = await aiosqlite.connect(str(db_path))
     try:
         version = await apply_migrations(conn, now_ms=1000)
-        assert version == 2
+        assert version == 3
 
         async with conn.execute("SELECT name FROM sqlite_master WHERE type='table'") as cursor:
             tables = {row[0] async for row in cursor}
@@ -20,6 +20,7 @@ async def test_apply_migrations_on_fresh_db(tmp_path):
         assert "lifecycle_events" in tables
         assert "candidate_audit" in tables
         assert "outcomes" in tables
+        assert "runtime_events" in tables
         assert "schema_migrations" in tables
     finally:
         await conn.close()
@@ -32,7 +33,7 @@ async def test_apply_migrations_is_idempotent(tmp_path):
     try:
         v1 = await apply_migrations(conn, now_ms=1000)
         v2 = await apply_migrations(conn, now_ms=2000)
-        assert v1 == v2 == 2
+        assert v1 == v2 == 3
     finally:
         await conn.close()
 
@@ -49,16 +50,18 @@ async def test_get_current_version_zero_on_empty_db(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_existing_version_one_database_upgrades_to_two(tmp_path):
+async def test_existing_version_one_database_upgrades_to_three(tmp_path):
     conn = await aiosqlite.connect(str(tmp_path / "upgrade.db"))
     try:
         await conn.executescript(_MIGRATIONS[0][1])
         await conn.execute("INSERT INTO schema_migrations(version, applied_ts_ms) VALUES (1, 1000)")
         await conn.commit()
         assert await get_current_version(conn) == 1
-        assert await apply_migrations(conn, now_ms=2000) == 2
+        assert await apply_migrations(conn, now_ms=2000) == 3
         async with conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='outcomes'") as cursor:
             assert await cursor.fetchone() == ("outcomes",)
-        assert await apply_migrations(conn, now_ms=3000) == 2
+        async with conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='runtime_events'") as cursor:
+            assert await cursor.fetchone() == ("runtime_events",)
+        assert await apply_migrations(conn, now_ms=3000) == 3
     finally:
         await conn.close()

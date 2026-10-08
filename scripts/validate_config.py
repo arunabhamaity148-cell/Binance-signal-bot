@@ -96,6 +96,8 @@ def validate_system(data: dict[str, Any]) -> list[str]:
 
     _err(errors, isinstance(data.get("binance_base_url"), str) and data["binance_base_url"].startswith("https://"),
          "system.yaml: 'binance_base_url' must be an https:// URL")
+    _err(errors, data.get("binance_env") in ("mainnet", "testnet"),
+         "system.yaml: 'binance_env' must be 'mainnet' or 'testnet'")
 
     staleness = data.get("staleness_budget_ms", {})
     _err(errors, isinstance(staleness, dict), "system.yaml: 'staleness_budget_ms' must be a mapping")
@@ -219,6 +221,22 @@ def validate_risk(data: dict[str, Any]) -> list[str]:
          "risk.yaml: risk_per_trade_pct must be in (0, 5]")
     _err(errors, isinstance(data.get("min_rr_tp2"), (int, float)) and data["min_rr_tp2"] > 0,
          "risk.yaml: min_rr_tp2 must be positive")
+
+    assumptions = data.get("paper_trading_assumptions")
+    _err(errors, isinstance(assumptions, dict),
+         "risk.yaml: paper_trading_assumptions must be a mapping")
+    if isinstance(assumptions, dict):
+        expected = {
+            "account_capital_inr": 200000,
+            "account_capital_usd": 2400,
+            "risk_per_trade_inr": 5000,
+            "risk_per_trade_pct": 2.5,
+            "assumed_leverage": 10,
+            "mode": "paper",
+        }
+        for key, value in expected.items():
+            _err(errors, assumptions.get(key) == value,
+                 f"risk.yaml: paper_trading_assumptions.{key} must be {value!r}")
 
     partials = data.get("partial_exit_fractions")
     _err(errors, isinstance(partials, list) and len(partials) == 4,

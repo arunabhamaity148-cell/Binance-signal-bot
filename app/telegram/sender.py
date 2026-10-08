@@ -115,6 +115,18 @@ class TelegramSender:
             )
             return SendResult(outcome=SendOutcome.DELIVERY_FAILED, detail=str(exc))
 
+    async def send_text_message(self, message: str) -> SendResult:
+        """Deliver non-signal text (for example, the scheduled daily report).
+
+        Uses the same dry-run mode, per-chat/group queue, retry handling,
+        and never-raise delivery contract as signal messages.
+        """
+        try:
+            await self._deliver(message)
+            return SendResult(outcome=SendOutcome.SENT)
+        except Exception as exc:  # noqa: BLE001 - notification failure must not stop the bot
+            return SendResult(outcome=SendOutcome.DELIVERY_FAILED, detail=str(exc))
+
     async def _deliver(self, message: str) -> None:
         if self._credentials.dry_run:
             logger.info("dry-run: would send telegram message", extra={"context": {"chars": len(message)}})

@@ -5,6 +5,7 @@ import asyncio
 import logging
 import math
 import os
+import sys
 import signal as os_signal
 from dataclasses import dataclass
 from typing import Callable, Mapping
@@ -81,6 +82,13 @@ async def run_application(*,config_dir=None,dependencies:BootDependencies|None=N
     try:
         await announce("configuration_validation")
         cfg=deps.config_loader(config_dir)
+        if cfg.system.get("binance_env", "mainnet") == "testnet":
+            warning=("TESTNET MODE — market data is sparse and may not reflect real\n"
+                     "liquidity. This is for pipeline verification only, NOT for signal\n"
+                     "generation.")
+            sys.stderr.write(warning + "\n")
+            sys.stderr.flush()
+            logger.warning(warning)
         await announce("assumed_equity_validation")
         try: equity=deps.equity_loader()
         except MissingAssumedEquityError as exc: exc.boot_stage=stage; raise
@@ -90,6 +98,9 @@ async def run_application(*,config_dir=None,dependencies:BootDependencies|None=N
         present=[name for name in forbidden if name in env]
         if present: raise BootStageError(stage,f"trading credentials are present in environment: {present}; refusing signal-bot startup")
         bot=deps.bot_factory(cfg,equity)
+        start_error_notifier=getattr(bot,"start_error_notifier",None)
+        if callable(start_error_notifier):
+            await start_error_notifier()
         await announce("exchange_info_validation")
         accepted,_rejected=validate_exchange_universe(cfg,await bot.exchange_info())
         await announce("websocket_first_snapshot")

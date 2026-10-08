@@ -31,6 +31,8 @@ from app.data.binance.models import (
 
 logger = get_logger(__name__)
 
+TESTNET_REST_BASE_URL = "https://testnet.binancefuture.com"
+
 _ALLOWED_PATHS = frozenset(
     {
         "/fapi/v1/exchangeInfo",
@@ -60,6 +62,13 @@ class RestClientConfig:
     max_retries: int = 4
     base_backoff_ms: int = 500
     jitter_ms: int = 250
+    binance_env: str = "mainnet"
+
+    def __post_init__(self) -> None:
+        if self.binance_env not in {"mainnet", "testnet"}:
+            raise ValueError("binance_env must be 'mainnet' or 'testnet'")
+        if self.binance_env == "testnet":
+            object.__setattr__(self, "base_url", TESTNET_REST_BASE_URL)
 
 
 class BinanceRestClient:

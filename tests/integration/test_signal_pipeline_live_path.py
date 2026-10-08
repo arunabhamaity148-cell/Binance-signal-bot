@@ -78,7 +78,11 @@ async def test_veto_blocked_candidate_is_never_persisted_or_enqueued(tmp_path,mo
     bot.symbols=["BTCUSDT"]; bot.outbox_task=__import__("asyncio").create_task(bot._publisher_loop())
     snapshot=_tradable_snapshot(); news=_news(snapshot)
     def blocked(**kwargs):
-        class Result: veto_state=VetoState.BLOCK; veto_reason="test hard block"; max_grade_cap=None
+        class Result:
+            veto_state=VetoState.BLOCK
+            veto_reason="test hard block"
+            max_grade_cap=None
+            guard_results=[]
         return Result()
     monkeypatch.setattr(bot_module,"run_veto_engine",blocked)
     try:
@@ -117,7 +121,7 @@ async def test_derived_risk_queries_and_manual_outcome_ledger(tmp_path):
         assert row==("manual","operator recorded")
         async with repo._conn.execute("SELECT MAX(version) FROM schema_migrations") as cur:
             version=(await cur.fetchone())[0]
-        assert version==2
+        assert version==3
     finally: await repo.close()
 
 

@@ -17,7 +17,8 @@ from app.core.math import is_tick_aligned, round_down_to_step
 
 ADVISORY_WARNING = (
     "ADVISORY ONLY — VERIFY ACCOUNT SIZING MANUALLY. No account state, "
-    "fill, leverage, or liquidation distance is observed."
+    "fill, leverage, or liquidation distance is observed.\n"
+    "LEVERAGE NOT SET BY BOT. Set leverage yourself on the exchange."
 )
 
 

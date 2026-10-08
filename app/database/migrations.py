@@ -1,10 +1,9 @@
 """Database migrations.
 
 A minimal, linear migration system: each migration is a numbered SQL
-script applied in order, tracked in a `schema_migrations` table. There
-is exactly one migration for the initial schema in this release;
-future schema changes add new numbered migrations rather than editing
-this one, so existing deployments can upgrade in place.
+script applied in order, tracked in a `schema_migrations` table. New
+schema changes add numbered migrations rather than editing earlier
+ones, so existing deployments can upgrade in place.
 """
 
 from __future__ import annotations
@@ -93,6 +92,32 @@ _MIGRATIONS: list[tuple[int, str]] = [
             FOREIGN KEY (signal_id) REFERENCES signals(signal_id)
         );
         CREATE INDEX IF NOT EXISTS idx_outcomes_recorded_ts ON outcomes(recorded_ts_ms);
+        """,
+    ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS runtime_events (
+            event_id TEXT PRIMARY KEY NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('VETO_BLOCK', 'ERROR')),
+            created_ts_ms INTEGER NOT NULL,
+            severity TEXT,
+            guard_name TEXT,
+            symbol TEXT,
+            strategy_source TEXT,
+            source TEXT,
+            exception_type TEXT,
+            message TEXT NOT NULL,
+            CHECK (
+                (event_type = 'VETO_BLOCK' AND guard_name GLOB 'G[1-9]')
+                OR (event_type = 'VETO_BLOCK' AND guard_name IN ('G10','G11','G12','G13','G14','G15'))
+                OR (event_type = 'ERROR' AND severity IN ('ERROR','CRITICAL'))
+            )
+        );
+        CREATE INDEX IF NOT EXISTS idx_runtime_events_type_created
+            ON runtime_events(event_type, created_ts_ms);
+        CREATE INDEX IF NOT EXISTS idx_runtime_events_guard_created
+            ON runtime_events(guard_name, created_ts_ms);
         """,
     ),
 ]

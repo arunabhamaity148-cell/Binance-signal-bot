@@ -61,6 +61,7 @@ class FakeRest:
 
 class FakeWebSocket:
     def __init__(self, config, streams):
+        self.config = config
         self.streams = streams
         self._connected = False
         self.last = {}
@@ -84,6 +85,9 @@ class FakeWebSocket:
 
 
 class _NoNetworkBot(SignalBot):
+    async def start_error_notifier(self):
+        self.notifier_start_skipped = True
+
     async def start_news_collectors(self):
         self.news_started = True
 
@@ -120,6 +124,29 @@ async def test_full_boot_stages_in_order_with_mocked_exchange_and_one_ws_message
     assert bots[0].first_snapshot.symbol == "BTCUSDT"
     assert bots[0].cache.ws.delivered is True
     assert rests[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_testnet_boot_warns_and_selects_testnet_websocket(capsys, caplog):
+    cfg = load_and_validate_all()
+    cfg.system["binance_env"] = "testnet"
+    bots = []
+
+    def factory(config, equity):
+        bot = _NoNetworkBot(config, equity, rest_client=FakeRest(config), ws_factory=FakeWebSocket,
+                            repository=_RepoCloseOnly())
+        bots.append(bot)
+        return bot
+
+    stop = asyncio.Event()
+    await run_application(dependencies=BootDependencies(lambda _=None: cfg, lambda: 1000.0, factory, {}),
+                          stop_event=stop)
+    warning = ("TESTNET MODE — market data is sparse and may not reflect real\n"
+               "liquidity. This is for pipeline verification only, NOT for signal\n"
+               "generation.")
+    assert capsys.readouterr().err == warning + "\n"
+    assert warning in caplog.text
+    assert bots[0].cache.ws.config.base_ws_url == "wss://stream.binancefuture.com/stream"
 
 
 def test_exchange_info_accepts_15_and_reports_each_rejected_symbol():

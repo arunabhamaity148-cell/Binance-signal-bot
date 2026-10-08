@@ -31,6 +31,8 @@ from app.core.models import FeedHealth
 
 logger = get_logger(__name__)
 
+TESTNET_WS_BASE_URL = "wss://stream.binancefuture.com/stream"
+
 _ALLOWED_STREAM_SUFFIXES = ("@aggTrade", "@markPrice", "@bookTicker", "@depth20@100ms")
 
 
@@ -51,6 +53,13 @@ class WebSocketClientConfig:
     jitter_ms: int = 250
     max_reconnects_per_window: int = 5
     reconnect_window_s: float = 300.0
+    binance_env: str = "mainnet"
+
+    def __post_init__(self) -> None:
+        if self.binance_env not in {"mainnet", "testnet"}:
+            raise ValueError("binance_env must be 'mainnet' or 'testnet'")
+        if self.binance_env == "testnet":
+            self.base_ws_url = TESTNET_WS_BASE_URL
 
 
 @dataclass

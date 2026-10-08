@@ -54,6 +54,7 @@ def test_format_matches_spec_example_exactly():
         "🚨 SIGNAL | BTCUSDT — LONG\n"
         "⚠️ ADVISORY ONLY — VERIFY ACCOUNT SIZING MANUALLY. No account state, "
         "fill, leverage, or liquidation distance is observed.\n"
+        "⚠️ LEVERAGE NOT SET BY BOT. Set leverage yourself on the exchange.\n"
         "🧠 Grade: A   📊 Confidence: 84%\n"
         "🎯 LIMIT ENTRY: 86120 – 86180\n"
         "🛑 SL: 85620\n"
@@ -94,16 +95,17 @@ def test_format_field_order_is_fixed():
     msg = format_signal_message(_signal(), _ctx())
     lines = msg.split("\n")
     assert lines[0].startswith("🚨 SIGNAL")
-    assert lines[1].startswith("⚠️")
-    assert "Grade" in lines[2]
-    assert "LIMIT ENTRY" in lines[3]
-    assert lines[4].startswith("🛑 SL")
-    assert "TP1" in lines[5] and "TP2" in lines[5]
-    assert "TP3" in lines[6] and "TP4" in lines[6]
-    assert "R:R" in lines[7] and "Expiry" in lines[7]
-    assert "News" in lines[8] and "Binance" in lines[8]
-    assert lines[9].startswith("🛡️ Veto")
-    assert lines[10].startswith("ID:")
+    assert lines[1].startswith("⚠️ ADVISORY ONLY")
+    assert lines[2].startswith("⚠️ LEVERAGE NOT SET BY BOT")
+    assert "Grade" in lines[3]
+    assert "LIMIT ENTRY" in lines[4]
+    assert lines[5].startswith("🛑 SL")
+    assert "TP1" in lines[6] and "TP2" in lines[6]
+    assert "TP3" in lines[7] and "TP4" in lines[7]
+    assert "R:R" in lines[8] and "Expiry" in lines[8]
+    assert "News" in lines[9] and "Binance" in lines[9]
+    assert lines[10].startswith("🛡️ Veto")
+    assert lines[11].startswith("ID:")
 
 
 # ---------------------------------------------------------------------------
@@ -113,19 +115,19 @@ def test_format_field_order_is_fixed():
 
 def test_advisory_warning_present_in_every_normal_message():
     msg = format_signal_message(_signal(), _ctx())
-    assert ADVISORY_WARNING in msg
+    assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
 
 
 def test_advisory_warning_present_regardless_of_grade():
     for grade in ("A+", "A", "B"):
         msg = format_signal_message(_signal(grade=grade), _ctx())
-        assert ADVISORY_WARNING in msg
+        assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
 
 
 def test_advisory_warning_present_regardless_of_veto_state():
     for veto_state, reason in (("PASS", None), ("BLOCK", "some reason")):
         msg = format_signal_message(_signal(veto_state=veto_state, veto_reason=reason), _ctx())
-        assert ADVISORY_WARNING in msg
+        assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +147,7 @@ def test_long_news_label_triggers_truncation_but_preserves_warning():
     long_news = "X" * 2000
     msg = format_signal_message(_signal(), _ctx(news=long_news))
     assert len(msg) <= MAX_MESSAGE_CHARS
-    assert ADVISORY_WARNING in msg
+    assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
 
 
 def test_long_why_lines_do_not_affect_format_since_why_lines_not_rendered():
@@ -164,7 +166,7 @@ def test_truncation_drops_least_essential_lines_first():
     long_binance = "Y" * 1500
     msg = format_signal_message(_signal(), _ctx(binance=long_binance))
     assert len(msg) <= MAX_MESSAGE_CHARS
-    assert ADVISORY_WARNING in msg
+    assert all(f"⚠️ {line}" in msg for line in ADVISORY_WARNING.splitlines())
     assert "ID: CSB-20260926-4F1A2C" in msg
 
 

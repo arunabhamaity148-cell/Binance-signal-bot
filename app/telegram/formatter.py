@@ -5,6 +5,7 @@ Format (exact, including emoji and spacing):
     🚨 SIGNAL | <SYMBOL> — <LONG|SHORT>
     ⚠️ ADVISORY ONLY — VERIFY ACCOUNT SIZING MANUALLY. No account
     state, fill, leverage, or liquidation distance is observed.
+    ⚠️ LEVERAGE NOT SET BY BOT. Set leverage yourself on the exchange.
     🧠 Grade: <A+|A|B>   📊 Confidence: <pct>
     🎯 LIMIT ENTRY: <low> – <high>
     🛑 SL: <price>
@@ -15,13 +16,13 @@ Format (exact, including emoji and spacing):
     🛡️ Veto: <PASS|BLOCK>
     ID: <signal_id>
 
-HARD RULE (spec section 15 + explicit instruction): the ADVISORY
-warning line is NEVER dropped. If the message would exceed the
+HARD RULE (spec section 15 + explicit instruction): both ADVISORY
+warning lines are NEVER dropped. If the message would exceed the
 1024-character cap, every OTHER line is shortened/dropped first, in a
-fixed, documented precedence order, before the warning is touched. If
-even the signal_id line plus the warning alone cannot fit under 1024
+fixed, documented precedence order, before either warning is touched. If
+even the signal_id line plus both warnings alone cannot fit under 1024
 characters, this module refuses to produce a message at all
-(`FormatterError`) rather than ever send a signal without the warning
+(`FormatterError`) rather than ever send a signal without the warnings
 — the caller (queue.py) is required to treat that as a dropped
 message, never a partially-correct one.
 
@@ -47,7 +48,7 @@ MAX_MESSAGE_CHARS = 1024
 class FormatterError(SignalBotError):
     """Raised when a Signal cannot be formatted within MAX_MESSAGE_CHARS
     even after every droppable line has been dropped — i.e. the
-    signal_id line + the ADVISORY warning alone do not fit. The caller
+    signal_id line + both ADVISORY warnings alone do not fit. The caller
     MUST treat this as "do not send", never as a partial message."""
 
 
@@ -96,7 +97,7 @@ def _build_lines(signal: Signal, ctx: DeliveryContext) -> list[str]:
     """
     direction_arrow = signal.direction
     header = f"🚨 SIGNAL | {signal.symbol} — {direction_arrow}"
-    warning = f"⚠️ {signal.advisory_warning}"
+    warning_lines = [f"⚠️ {line}" for line in signal.advisory_warning.splitlines()]
     grade_conf = f"🧠 Grade: {signal.grade}   📊 Confidence: {_format_confidence_pct(signal.confidence)}"
     entry = f"🎯 LIMIT ENTRY: {_format_price(signal.entry_low)} – {_format_price(signal.entry_high)}"
     sl = f"🛑 SL: {_format_price(signal.stop_loss)}"
@@ -110,17 +111,17 @@ def _build_lines(signal: Signal, ctx: DeliveryContext) -> list[str]:
     veto = f"🛡️ Veto: {signal.veto_state}"
     signal_id_line = f"ID: {signal.signal_id}"
 
-    return [header, warning, grade_conf, entry, sl, tp12, tp34, rr_expiry, news_binance, veto, signal_id_line]
+    return [header, *warning_lines, grade_conf, entry, sl, tp12, tp34, rr_expiry, news_binance, veto, signal_id_line]
 
 
 # Precedence order for what gets dropped FIRST when the message is too
 # long, expressed as line indices into _build_lines' output, ordered
-# least-essential-first. The warning (index 1) and signal_id (index
-# 10) are never in this list — they are the two lines that must always
-# survive (signal_id for audit traceability, warning per the hard
+# least-essential-first. The warnings (indices 1-2) and signal_id (index
+# 11) are never in this list — they are the lines that must always
+# survive (signal_id for audit traceability, warnings per the hard
 # rule). Everything else is droppable, in this order, before the
 # warning would ever be touched.
-_DROP_PRECEDENCE = [8, 6, 5, 3, 4, 2, 9, 7, 0]  # news/binance, tp3/4, tp1/2, entry, sl, grade/conf, veto, rr/expiry, header
+_DROP_PRECEDENCE = [9, 7, 6, 4, 5, 3, 10, 8, 0]  # news/binance, tp3/4, tp1/2, entry, sl, grade/conf, veto, rr/expiry, header
 
 
 def format_signal_message(signal: Signal, ctx: DeliveryContext) -> str:
@@ -128,7 +129,7 @@ def format_signal_message(signal: Signal, ctx: DeliveryContext) -> str:
 
     Raises FormatterError if the message cannot fit within
     MAX_MESSAGE_CHARS even after dropping every droppable line (i.e.
-    header line + warning line + signal_id line alone, joined by
+    both warning lines + signal_id line alone, joined by
     newlines, still exceed the cap) — this should be effectively
     impossible given the warning's fixed, known length and a
     reasonable signal_id format, but the check exists so the hard rule
@@ -141,8 +142,8 @@ def format_signal_message(signal: Signal, ctx: DeliveryContext) -> str:
     if len(message) <= MAX_MESSAGE_CHARS:
         return message
 
-    # Drop lines in precedence order until it fits, never dropping the
-    # warning (index 1) or the signal_id (index 10).
+    # Drop lines in precedence order until it fits, never dropping either
+    # advisory line (indices 1-2) or the signal_id (index 11).
     remaining_indices = list(range(len(lines)))
     for drop_idx in _DROP_PRECEDENCE:
         if len(message) <= MAX_MESSAGE_CHARS:
@@ -154,9 +155,9 @@ def format_signal_message(signal: Signal, ctx: DeliveryContext) -> str:
     if len(message) <= MAX_MESSAGE_CHARS:
         return message
 
-    # Even header + warning + signal_id alone don't fit: refuse to
+    # Both warnings + signal_id alone don't fit: refuse to
     # produce a message. Never send a truncated/corrupted warning.
-    minimal = "\n".join([lines[1], lines[10]])  # warning + signal_id only
+    minimal = "\n".join([lines[1], lines[2], lines[11]])  # both warning lines + signal_id only
     if len(minimal) > MAX_MESSAGE_CHARS:
         raise FormatterError(
             f"signal {signal.signal_id}: even the ADVISORY warning plus signal_id "
