@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import time
 from collections import Counter, deque
@@ -286,28 +287,40 @@ class LiveSnapshotCache:
         depth,ticker=c.get("depth"),c.get("ticker")
         depth_stamp=received.get(f"{lower}@depth20@100ms") or getattr(depth,"event_time_ms",None)
         ticker_stamp=received.get(f"{lower}@bookTicker") or getattr(ticker,"event_time_ms",None)
-        deriv=c.get("derivatives")
-        deriv_stamps=[]
-        if deriv is not None:
-            for field in ("funding_rate_history","open_interest_history_5m","open_interest_history_15m",
-                          "open_interest_history_1h","open_interest_history_1d",
-                          "long_short_account_ratio_history","taker_long_short_ratio_history"):
-                series=getattr(deriv,field,()) or ()
-                if series: deriv_stamps.append(getattr(series[-1],"event_ts_ms",None))
-            premium=getattr(deriv,"premium_index_current",None)
-            if premium is not None: deriv_stamps.append(getattr(premium,"event_ts_ms",None))
         trades=c.get("trades") or ()
         trade_stamp=received.get(f"{lower}@aggTrade")
         if trade_stamp is None and trades:
             trade_stamp=max((getattr(row,"trade_time_ms",0) for row in trades),default=0)
         oi=c.get("oi")
+        deriv_health=self.diagnostic_derivatives_health(symbol,stamp)
         return {
             "kline_age_ms":self._diagnostic_age_ms(stamp,[kline_stamp]),
             "book_age_ms":self._diagnostic_age_ms(stamp,[depth_stamp,ticker_stamp]),
-            "deriv_age_ms":self._diagnostic_age_ms(stamp,deriv_stamps),
+            "deriv_oldest_age_ms":deriv_health["oldest_age_ms"],
+            "deriv_newest_age_ms":deriv_health["newest_age_ms"],
+            "deriv_age_ms":deriv_health["oldest_age_ms"],  # compatibility alias; deprecated
             "taker_age_ms":self._diagnostic_age_ms(stamp,[trade_stamp]),
             "oi_age_ms":self._diagnostic_age_ms(stamp,[getattr(oi,"received_ts_ms",None)]),
         }
+
+    def diagnostic_derivatives_health(self,symbol,as_of_ts_ms=None):
+        """Return oldest/newest derivative event ages and sample count."""
+        stamp=now_ms() if as_of_ts_ms is None else int(as_of_ts_ms)
+        deriv=self.data.get(symbol,{}).get("derivatives")
+        timestamps=[]
+        if deriv is not None:
+            for field in ("funding_rate_history","open_interest_history_5m","open_interest_history_15m",
+                          "open_interest_history_1h","open_interest_history_1d",
+                          "long_short_account_ratio_history","taker_long_short_ratio_history"):
+                timestamps.extend(getattr(point,"event_ts_ms",None) for point in (getattr(deriv,field,()) or ()))
+            premium=getattr(deriv,"premium_index_current",None)
+            if premium is not None:
+                timestamps.append(getattr(premium,"event_ts_ms",None))
+        valid=[int(value) for value in timestamps if value is not None and int(value)>0]
+        if not valid:
+            return {"symbol":symbol,"oldest_age_ms":None,"newest_age_ms":None,"count":0}
+        return {"symbol":symbol,"oldest_age_ms":max(0,stamp-min(valid)),
+                "newest_age_ms":max(0,stamp-max(valid)),"count":len(valid)}
 
     def snapshot_missing_components(self,symbol):
         """Return labeled snapshot components that are currently absent or invalid."""
@@ -457,7 +470,9 @@ class SignalBot:
                 "missing":[names.get(item,item.removeprefix("missing=")) for item in missing],
                 "missing_raw":missing,
                 "kline_age_ms":ages.get("kline_age_ms"),"book_age_ms":ages.get("book_age_ms"),
-                "deriv_age_ms":ages.get("deriv_age_ms"),"taker_age_ms":ages.get("taker_age_ms"),
+                "deriv_oldest_age_ms":ages.get("deriv_oldest_age_ms",ages.get("deriv_age_ms")),
+                "deriv_newest_age_ms":ages.get("deriv_newest_age_ms"),
+                "taker_age_ms":ages.get("taker_age_ms"),
                 "oi_age_ms":ages.get("oi_age_ms"),"ws_connected":bool(getattr(ws,"is_connected",False))}
 
     async def wait_for_snapshot_readiness(self,symbols,timeout_s=90.0,min_ready_count=None):
@@ -527,11 +542,15 @@ class SignalBot:
             except asyncio.TimeoutError: pass
 
     async def _refresh_derivatives_history_loop(self, interval_s: float = DERIVATIVES_REFRESH_INTERVAL_S):
+        cycle=0
         while not self.stop_event.is_set():
+            cycle+=1
+            logger.info("deriv_refresh_started",extra={"context":{"cycle":cycle}})
             try:
                 await self.cache.refresh_historical_derivatives()
+                logger.info("deriv_refresh_completed",extra={"context":{"cycle":cycle,"succeeded":True,"failed":False}})
             except Exception:
-                logger.exception("historical derivatives refresh cycle failed")
+                logger.exception("deriv_refresh_completed",extra={"context":{"cycle":cycle,"succeeded":False,"failed":True}})
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=interval_s)
             except asyncio.TimeoutError: pass
 
@@ -560,6 +579,10 @@ class SignalBot:
             "strategy":candidate.strategy_source,"direction":candidate.direction.value,
             "grade":grade,"veto":veto,"reason":reason,"stage":stage}})
 
+    @staticmethod
+    def _log_consensus_diagnostic(event, context):
+        logger.info(event,extra={"context":context})
+
     async def evaluate_symbol(self,snapshot,news_state):
         try:
             candidates=generate_candidates_at_snapshot(snapshot,news_state,self.cfg.strategy)
@@ -577,7 +600,11 @@ class SignalBot:
             await self.repo.insert_candidate_audit(symbol=c.symbol,strategy_source=c.strategy_source,direction=c.direction.value,
                 confidence=c.confidence,event_ts_ms=c.event_ts_ms,snapshot_version=snapshot.snapshot_version,meta=c.meta)
             self._log_candidate(c,grade="UNASSESSED",veto="NOT_RUN",reason="created",stage="created")
-        for (symbol,_direction),(grade,confidence,group) in grade_candidates(candidates,self.cfg.strategy["consensus"]).items():
+        grade_kwargs={}
+        if "diagnostic_logger" in inspect.signature(grade_candidates).parameters:
+            grade_kwargs["diagnostic_logger"]=self._log_consensus_diagnostic
+        for (symbol,_direction),(grade,confidence,group) in grade_candidates(
+                candidates,self.cfg.strategy["consensus"],**grade_kwargs).items():
             grade_label=getattr(grade,"value",grade) if grade is not None else "NONE"
             if grade is None:
                 for item in group:
@@ -657,6 +684,9 @@ class SignalBot:
                 if self.stop_event.is_set(): break
                 check=self._snapshot_check_context(symbol,now_ms())
                 logger.info("snapshot_check",extra={"context":check})
+                health_fn=getattr(self.cache,"diagnostic_derivatives_health",None)
+                if callable(health_fn):
+                    logger.info("deriv_series_health",extra={"context":health_fn(symbol)})
                 if check["ready"]: ready_count+=1
                 try: await self.evaluate_symbol(self.cache.get_snapshot(symbol),news)
                 except SnapshotIncompleteError as exc: self._log_snapshot_incomplete(symbol,exc)

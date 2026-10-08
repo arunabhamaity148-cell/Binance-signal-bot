@@ -140,10 +140,12 @@ def generate_candidates_at_snapshot(
     return candidates
 
 
-def grade_candidates(candidates: list[CandidateSignal], consensus_cfg: dict) -> dict:
+def grade_candidates(candidates: list[CandidateSignal], consensus_cfg: dict, *, diagnostic_logger=None) -> dict:
     """Groups candidates by (symbol, direction) and runs the SAME
     app.risk.consensus effective-vote grading the live loop uses.
     Returns {(symbol, direction): (grade_or_none, confidence_weighted)}.
+    When supplied, ``diagnostic_logger`` receives the consensus input and
+    output context immediately before and after grade assignment.
     """
     groups: dict[tuple[str, str], list[CandidateSignal]] = {}
     for c in candidates:
@@ -153,7 +155,21 @@ def grade_candidates(candidates: list[CandidateSignal], consensus_cfg: dict) -> 
     result = {}
     for key, group in groups.items():
         consensus_result = compute_effective_votes(group)
+        if diagnostic_logger is not None:
+            diagnostic_logger("consensus_input", {
+                "symbol": key[0], "direction": key[1], "num_candidates": len(group),
+                "channels": sorted({channel.value for item in group for channel in item.channels}),
+                "confidences": [item.confidence for item in group], "v_eff": consensus_result.v_eff,
+            })
         grade = assign_grade(consensus_result, consensus_cfg)
+        if diagnostic_logger is not None:
+            diagnostic_logger("consensus_output", {
+                "symbol": key[0], "direction": key[1],
+                "grade": getattr(grade, "value", grade) if grade is not None else None,
+                "v_eff": consensus_result.v_eff, "confidence_weighted": consensus_result.confidence_weighted,
+                "num_groups": consensus_result.num_groups,
+                "reason": "grade_threshold_met" if grade is not None else "no_grade_threshold_met",
+            })
         result[key] = (grade, consensus_result.confidence_weighted, group)
     return result
 

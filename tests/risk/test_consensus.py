@@ -4,6 +4,7 @@ import math
 
 from app.config import load_all
 from app.core.models import CandidateSignal, ChannelName, Direction
+from app.backtest.engine import grade_candidates
 from app.risk.consensus import assign_grade, compute_effective_votes
 
 CONSENSUS_CFG = load_all().strategy["consensus"]
@@ -33,6 +34,27 @@ def test_compute_effective_votes_single_candidate():
     assert math.isclose(result.v_eff, 1.0, rel_tol=1e-9)
     assert math.isclose(result.confidence_weighted, 0.8, rel_tol=1e-9)
     assert result.num_groups == 2
+
+
+def test_single_qualifying_candidate_reaches_grade_b_without_two_groups():
+    candidate = _candidate("S1", 0.8, (ChannelName.LIQUIDITY, ChannelName.TAKER_FLOW))
+    result = compute_effective_votes([candidate])
+    assert assign_grade(result, CONSENSUS_CFG) == "B"
+
+
+def test_grade_candidates_emits_consensus_input_and_output_diagnostics():
+    events = []
+    candidate = _candidate("S1", 0.8, (ChannelName.LIQUIDITY, ChannelName.TAKER_FLOW))
+    graded = grade_candidates(
+        [candidate], CONSENSUS_CFG,
+        diagnostic_logger=lambda event, context: events.append((event, context)),
+    )
+    assert graded[("BTCUSDT", "LONG")][0] == "B"
+    assert [event for event, _context in events] == ["consensus_input", "consensus_output"]
+    assert events[0][1]["num_candidates"] == 1
+    assert events[0][1]["v_eff"] == 1.0
+    assert events[1][1]["grade"] == "B"
+    assert events[1][1]["reason"] == "grade_threshold_met"
 
 
 def test_compute_effective_votes_two_candidates_different_channels_higher_veff():

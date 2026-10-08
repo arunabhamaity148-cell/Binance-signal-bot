@@ -7,6 +7,7 @@ import pytest
 
 from app.bot import SignalBot
 from app.config import load_all
+from app.core.models import TimestampedValue
 
 
 class _Closable:
@@ -37,7 +38,8 @@ class _Cache:
         return []
 
     def diagnostic_ages_ms(self, _symbol, _stamp):
-        return {"kline_age_ms": 100, "book_age_ms": 200, "deriv_age_ms": 300,
+        return {"kline_age_ms": 100, "book_age_ms": 200, "deriv_oldest_age_ms": 300,
+                "deriv_newest_age_ms": 250,
                 "taker_age_ms": 400, "oi_age_ms": 500}
 
     def get_snapshot(self, symbol):
@@ -84,7 +86,7 @@ async def test_main_loop_emits_info_diagnostics_for_empty_strategy_cycle(monkeyp
     assert check["symbol"] == "BTCUSDT"
     assert check["ready"] is True
     assert check["missing"] == []
-    assert (check["kline_age_ms"], check["book_age_ms"], check["deriv_age_ms"], check["taker_age_ms"]) == (100, 200, 300, 400)
+    assert (check["kline_age_ms"], check["book_age_ms"], check["deriv_oldest_age_ms"], check["deriv_newest_age_ms"], check["taker_age_ms"]) == (100, 200, 300, 250, 400)
 
     strategy = next(record.context for record in caplog.records if record.getMessage() == "strategy_eval")
     assert [strategy[f"s{i}_cand"] for i in range(1, 6)] == [0, 0, 0, 0, 0]
@@ -125,3 +127,21 @@ async def test_reconnect_rehydration_reports_ready_and_stale_symbols(caplog):
     assert stale["symbol"] == "ETHUSDT"
     assert stale["last_data_age_ms"] == 25_000
     assert stale["missing_components"] == ["missing=orderbook"]
+
+
+def test_derivative_series_health_reports_oldest_and_newest_event_ages():
+    from app.bot import LiveSnapshotCache
+
+    cache = LiveSnapshotCache.__new__(LiveSnapshotCache)
+    point_old = TimestampedValue(1.0, 1_000, 1_000)
+    point_new = TimestampedValue(2.0, 9_000, 9_000)
+    cache.data = {"ADAUSDT": {"derivatives": SimpleNamespace(
+        funding_rate_history=[point_old, point_new], open_interest_history_5m=[],
+        open_interest_history_15m=[], open_interest_history_1h=[], open_interest_history_1d=[],
+        long_short_account_ratio_history=[], taker_long_short_ratio_history=[],
+        premium_index_current=None,
+    )}}
+
+    assert cache.diagnostic_derivatives_health("ADAUSDT", 10_000) == {
+        "symbol": "ADAUSDT", "oldest_age_ms": 9_000, "newest_age_ms": 1_000, "count": 2,
+    }
