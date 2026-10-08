@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.core.models import TimestampedValue
-from app.data.binance.models import RawFundingRate, RawLongShortRatio, RawOpenInterest
+from app.data.binance.models import RawFundingRate, RawLongShortRatio, RawOpenInterest, RawTakerLongShortRatio
 from app.data.derivatives import build_derivatives_state, oi_series_for_window
 
 
@@ -9,6 +9,7 @@ def test_build_derivatives_state_assembles_all_series():
     funding = [RawFundingRate(symbol="BTCUSDT", funding_rate=0.0001, funding_time_ms=1000)]
     oi5 = [RawOpenInterest(symbol="BTCUSDT", open_interest=1000.0, timestamp_ms=1000)]
     ls = [RawLongShortRatio(symbol="BTCUSDT", long_short_ratio=1.2, timestamp_ms=1000)]
+    taker = [RawTakerLongShortRatio("BTCUSDT", 1.2, 120.0, 100.0, 1000)]
 
     state = build_derivatives_state(
         "BTCUSDT",
@@ -18,7 +19,7 @@ def test_build_derivatives_state_assembles_all_series():
         oi_1h_rows=[],
         oi_1d_rows=[],
         long_short_account_rows=ls,
-        taker_long_short_rows=ls,
+        taker_long_short_rows=taker,
         premium_index_current=None,
         received_ts_ms=2000,
     )

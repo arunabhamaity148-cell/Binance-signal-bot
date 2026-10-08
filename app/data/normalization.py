@@ -12,7 +12,7 @@ from __future__ import annotations
 from app.core.errors import DataIntegrityError
 from app.core.math import OHLC
 from app.core.models import SymbolKlines, TimestampedValue
-from app.data.binance.models import RawFundingRate, RawKline, RawOpenInterest, RawLongShortRatio
+from app.data.binance.models import RawFundingRate, RawKline, RawOpenInterest, RawLongShortRatio, RawTakerLongShortRatio
 
 
 def kline_to_ohlc(raw: RawKline) -> OHLC:
@@ -104,6 +104,14 @@ def open_interest_to_timestamped(raw: RawOpenInterest, received_ts_ms: int) -> T
 def long_short_ratio_to_timestamped(raw: RawLongShortRatio, received_ts_ms: int) -> TimestampedValue:
     return TimestampedValue(
         value=raw.long_short_ratio, event_ts_ms=raw.timestamp_ms, received_ts_ms=received_ts_ms
+    )
+
+
+def taker_long_short_ratio_to_timestamped(
+    raw: RawTakerLongShortRatio, received_ts_ms: int
+) -> TimestampedValue:
+    return TimestampedValue(
+        value=raw.taker_buy_sell_ratio, event_ts_ms=raw.ts_ms, received_ts_ms=received_ts_ms
     )
 
 

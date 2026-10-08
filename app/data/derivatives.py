@@ -74,12 +74,14 @@ from app.data.binance.models import (
     RawFundingRate,
     RawLongShortRatio,
     RawOpenInterest,
+    RawTakerLongShortRatio,
 )
 from app.data.normalization import (
     funding_rate_to_timestamped,
     long_short_ratio_to_timestamped,
     normalize_timestamped_series,
     open_interest_to_timestamped,
+    taker_long_short_ratio_to_timestamped,
 )
 
 # Live /fapi/v1/openInterest poll cadence, per symbol (class E).
@@ -103,7 +105,7 @@ def build_derivatives_state(
     oi_1h_rows: list[RawOpenInterest],
     oi_1d_rows: list[RawOpenInterest],
     long_short_account_rows: list[RawLongShortRatio],
-    taker_long_short_rows: list[RawLongShortRatio],
+    taker_long_short_rows: list[RawTakerLongShortRatio],
     premium_index_current: RawOpenInterest | None,
     received_ts_ms: int,
 ) -> DerivativesState:
@@ -127,7 +129,7 @@ def build_derivatives_state(
         long_short_account_rows, long_short_ratio_to_timestamped, received_ts_ms
     )
     taker_ls = normalize_timestamped_series(
-        taker_long_short_rows, long_short_ratio_to_timestamped, received_ts_ms
+        taker_long_short_rows, taker_long_short_ratio_to_timestamped, received_ts_ms
     )
 
     premium_tv: TimestampedValue | None = None

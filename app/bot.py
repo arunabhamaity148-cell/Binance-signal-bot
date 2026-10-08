@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
@@ -19,7 +20,8 @@ from app.data.binance.rest import BinanceRestClient, RestClientConfig
 from app.data.binance.websocket import BinanceWebSocketClient, WebSocketClientConfig
 from app.data.derivatives import POLL_INTERVAL_LIVE_OI_S, build_derivatives_state, merge_live_oi_into_5m_series
 from app.data.normalization import (funding_rate_to_timestamped, long_short_ratio_to_timestamped,
-    merge_kline_series, normalize_kline_series, open_interest_to_timestamped)
+    merge_kline_series, normalize_kline_series, open_interest_to_timestamped,
+    taker_long_short_ratio_to_timestamped)
 from app.data.orderbook import depth_and_ticker_to_orderbook_state
 from app.data.snapshot import SnapshotInputs, build_snapshot
 from app.news.collectors import NewsCollector, build_retry_config, build_source_configs
@@ -92,7 +94,12 @@ class LiveSnapshotCache:
         self.ws_task=asyncio.create_task(self._consume(),name="binance-public-websocket")
 
     async def backfill(self,symbols):
-        for symbol in symbols: self.data[symbol]={"klines":{},"depth":None,"ticker":None,"trades":deque(maxlen=1500),"derivatives":None,"oi":None,"error":None}
+        # A WebSocket reconnect can request a resync while the first boot
+        # backfill is still running. Preserve the live cache rows so a
+        # concurrent resync cannot replace them with empty placeholders.
+        for symbol in symbols:
+            self.data.setdefault(symbol,{"klines":{},"depth":None,"ticker":None,
+                "trades":deque(maxlen=1500),"derivatives":None,"oi":None,"error":None})
         results=await asyncio.gather(*(self._backfill_one(s) for s in symbols),return_exceptions=True)
         for symbol,result in zip(symbols,results):
             if isinstance(result,BaseException):
@@ -108,7 +115,14 @@ class LiveSnapshotCache:
         results=await asyncio.gather(*calls,return_exceptions=True); received=now_ms()
         required=[*range(7),len(results)-1]
         bad=[(i,results[i]) for i in required if isinstance(results[i],BaseException)]
-        if bad: c["error"]="; ".join(f"request[{i}]: {type(e).__name__}: {e}" for i,e in bad); return
+        if bad:
+            request_names=("klines:5m","klines:15m","klines:1h","klines:4h","klines:1d","depth","bookTicker",
+                "aggTrades","fundingRate","openInterestHist:5m","openInterestHist:15m","openInterestHist:1h",
+                "openInterestHist:1d","globalLongShortAccountRatio","takerlongshortRatio","openInterest")
+            failures=[{"request":request_names[i],"error":f"{type(exc).__name__}: {exc}"} for i,exc in bad]
+            c["error"]="; ".join(f"{item['request']}: {item['error']}" for item in failures)
+            logger.error("required symbol backfill failed",extra={"context":{"symbol":symbol,"failures":failures}})
+            return
         for i,tf in enumerate(_TIMEFRAMES): c["klines"][tf]=normalize_kline_series(symbol,tf,results[i])
         c["depth"]=_depth_from_rest(symbol,results[5],received); c["ticker"]=_ticker_from_rest(symbol,results[6],received)
         if not isinstance(results[7],BaseException):
@@ -121,6 +135,7 @@ class LiveSnapshotCache:
             oi_1h_rows=optional(11),oi_1d_rows=optional(12),long_short_account_rows=optional(13),taker_long_short_rows=optional(14),
             premium_index_current=None,received_ts_ms=received)
         c["oi"]=open_interest_to_timestamped(results[15],received)
+        c["error"]=None
 
     async def refresh_live_oi(self):
         if self.data:
@@ -185,7 +200,7 @@ class LiveSnapshotCache:
                 # Retained deliberately so that if a future strategy consumes it,
                 # the series stays fresh. See docs/KNOWN_UNCERTAINTIES.md.
                 ("takerlongshortRatio", "taker_long_short_ratio_history", self.rest.taker_long_short_ratio(
-                    symbol, "5m", limit=500, start_time_ms=start, end_time_ms=as_of), long_short_ratio_to_timestamped),
+                    symbol, "5m", limit=500, start_time_ms=start, end_time_ms=as_of), taker_long_short_ratio_to_timestamped),
             ]
             results = await asyncio.gather(*(item[2] for item in requests), return_exceptions=True)
             derivatives = cache.get("derivatives")
@@ -232,12 +247,37 @@ class LiveSnapshotCache:
 
     def is_snapshot_ready(self,symbol):
         c=self.data.get(symbol)
-        if not c or c["error"] or not c["oi"] or not c["depth"] or not c["ticker"] or c["derivatives"] is None: return False
-        if len(c["klines"].get("5m",[]).bars if c["klines"].get("5m") else []) < self.cfg.strategy["common"]["min_candles"]: return False
-        if not c["depth"].bids or not c["depth"].asks or c["ticker"].best_bid<=0 or c["ticker"].best_ask<=0: return False
-        if sum(x.price*x.quantity for x in c["depth"].bids[:5])<=0 or sum(x.price*x.quantity for x in c["depth"].asks[:5])<=0: return False
-        return not (now_ms()-c["oi"].received_ts_ms>self.cfg.system["staleness_budget_ms"]["oi_ms"] or
-                    c["oi"].received_ts_ms-c["oi"].event_ts_ms>self.cfg.system["staleness_budget_ms"]["oi_ms"])
+        if not c or c.get("error"): return False
+        missing=set(self.snapshot_missing_components(symbol))
+        # Preserve the existing readiness gate; taker flow remains an optional snapshot input.
+        return not missing.intersection({"missing=kline","missing=orderbook","missing=derivatives","missing=oi"})
+
+    def snapshot_missing_components(self,symbol):
+        """Return labeled snapshot components that are currently absent or invalid."""
+        c=self.data.get(symbol)
+        if not c:
+            return ["missing=kline","missing=orderbook","missing=derivatives","missing=taker_flow","missing=oi"]
+        missing=[]
+        five_min=c.get("klines",{}).get("5m")
+        min_candles=int(self.cfg.strategy["common"]["min_candles"])
+        if five_min is None or len(five_min.bars)<min_candles:
+            missing.append("missing=kline")
+        depth,ticker=c.get("depth"),c.get("ticker")
+        if (depth is None or ticker is None or not depth.bids or not depth.asks or
+                ticker.best_bid<=0 or ticker.best_ask<=0 or
+                sum(x.price*x.quantity for x in depth.bids[:5])<=0 or
+                sum(x.price*x.quantity for x in depth.asks[:5])<=0):
+            missing.append("missing=orderbook")
+        if c.get("derivatives") is None:
+            missing.append("missing=derivatives")
+        if not c.get("trades"):
+            missing.append("missing=taker_flow")
+        oi=c.get("oi")
+        oi_budget=int(self.cfg.system["staleness_budget_ms"]["oi_ms"])
+        if (oi is None or now_ms()-oi.received_ts_ms>oi_budget or
+                oi.received_ts_ms-oi.event_ts_ms>oi_budget):
+            missing.append("missing=oi")
+        return missing
 
     def not_ready(self,symbols): return [s for s in symbols if not self.is_snapshot_ready(s)]
 
@@ -270,6 +310,7 @@ class SignalBot:
         self.error_notifier=None; self.report_task=None
         self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock()
+        self._boot_started_monotonic=time.monotonic(); self._snapshot_diagnostics={}
 
     async def exchange_info(self):
         """Read public exchangeInfo and preserve per-symbol filter parse failures for boot reporting."""
@@ -303,6 +344,42 @@ class SignalBot:
         self.symbols=list(symbols); self.cache=self.cache_factory(self.cfg,self.rest,self.ws_factory)
         await self.cache.start(self.symbols)
 
+    def _log_snapshot_incomplete(self,symbol,error=None,*,force=False):
+        if self.cache is None:
+            return
+        diagnostic_fn=getattr(self.cache,"snapshot_missing_components",None)
+        missing=diagnostic_fn(symbol) if callable(diagnostic_fn) else ["missing=unknown"]
+        cache_data=getattr(self.cache,"data",{})
+        cache_row=cache_data.get(symbol,{})
+        if cache_row.get("error") and "missing=backfill" not in missing:
+            missing.append("missing=backfill")
+        if not missing:
+            missing=["missing=unknown"]
+        now=time.monotonic(); signature=tuple(missing)
+        previous=self._snapshot_diagnostics.get(symbol)
+        if not force and previous and previous[0]==signature and now-previous[1]<10.0:
+            return
+        self._snapshot_diagnostics[symbol]=(signature,now)
+        five_min=cache_row.get("klines",{}).get("5m")
+        depth,ticker=cache_row.get("depth"),cache_row.get("ticker")
+        oi=cache_row.get("oi")
+        component_state={"cache_entry_present":symbol in cache_data,
+            "kline_5m_bars":len(five_min.bars) if five_min is not None else 0,
+            "min_candles":int(self.cfg.strategy["common"]["min_candles"]),
+            "depth_present":depth is not None,"ticker_present":ticker is not None,
+            "derivatives_present":cache_row.get("derivatives") is not None,
+            "trade_count":len(cache_row.get("trades") or ()),"oi_present":oi is not None,
+            "oi_age_ms":now_ms()-oi.received_ts_ms if oi is not None else None,
+            "oi_event_lag_ms":oi.received_ts_ms-oi.event_ts_ms if oi is not None else None}
+        context={"symbol":symbol,"elapsed_boot_s":round(max(0.0,now-self._boot_started_monotonic),2),
+                 "missing_components":missing}
+        if cache_row.get("error"):
+            context["backfill_error"]=cache_row["error"]
+        if error is not None:
+            context["error"]=str(error)
+        context["component_state"]=component_state
+        logger.warning("snapshot incomplete; signal evaluation blocked",extra={"context":context})
+
     async def wait_for_snapshot_readiness(self,symbols,timeout_s=90.0,min_ready_count=None):
         deadline=asyncio.get_running_loop().time()+timeout_s
         minimum=min(len(symbols),int(self.cfg.system["boot_checks"]["min_symbols_validated"])) if min_ready_count is None else min(len(symbols),int(min_ready_count))
@@ -310,12 +387,17 @@ class SignalBot:
         except asyncio.TimeoutError as exc: raise SnapshotReadinessError(self.cache.not_ready(symbols)) from exc
         while True:
             missing=self.cache.not_ready(symbols)
+            for symbol in missing:
+                self._log_snapshot_incomplete(symbol)
             if len(symbols)-len(missing)>=minimum and self.cache.ws.is_connected: return
             if self.cache.ws_task.done():
                 error=self.cache.ws_task.exception()
                 raise RuntimeError(f"WebSocket message task stopped before readiness: {error}")
             remaining=deadline-asyncio.get_running_loop().time()
-            if remaining<=0: raise SnapshotReadinessError(missing)
+            if remaining<=0:
+                for symbol in missing:
+                    self._log_snapshot_incomplete(symbol,force=True)
+                raise SnapshotReadinessError(missing)
             await asyncio.sleep(min(0.1,remaining))
 
     async def start_news_collectors(self):
@@ -447,6 +529,7 @@ class SignalBot:
             for symbol in self.symbols:
                 if self.stop_event.is_set(): break
                 try: await self.evaluate_symbol(self.cache.get_snapshot(symbol),news)
+                except SnapshotIncompleteError as exc: self._log_snapshot_incomplete(symbol,exc)
                 except Exception as exc: logger.exception("symbol evaluation failed; no signal published",extra={"context":{"symbol":symbol,"error":str(exc)}})
             try: await asyncio.wait_for(self.stop_event.wait(),timeout=interval)
             except asyncio.TimeoutError: pass

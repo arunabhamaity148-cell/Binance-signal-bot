@@ -27,6 +27,7 @@ from app.data.binance.models import (
     RawKline,
     RawLongShortRatio,
     RawOpenInterest,
+    RawTakerLongShortRatio,
 )
 
 logger = get_logger(__name__)
@@ -237,9 +238,9 @@ class BinanceRestClient:
     async def taker_long_short_ratio(
         self, symbol: str, period: str, limit: int = 30, *,
         start_time_ms: int | None = None, end_time_ms: int | None = None,
-    ) -> list[RawLongShortRatio]:
+    ) -> list[RawTakerLongShortRatio]:
         rows = await self._get(
             "/futures/data/takerlongshortRatio",
             {**self._history_params(symbol, limit, start_time_ms, end_time_ms), "period": period},
         )
-        return [RawLongShortRatio.from_rest_row(r) for r in rows]
+        return [RawTakerLongShortRatio.from_rest_row(r, symbol) for r in rows]

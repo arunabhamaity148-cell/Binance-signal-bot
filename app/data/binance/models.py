@@ -259,6 +259,38 @@ class RawLongShortRatio:
 
 
 @dataclass(frozen=True)
+class RawTakerLongShortRatio:
+    """Wire row from /futures/data/takerlongshortRatio.
+
+    Unlike the four other Futures statistics histories, this response
+    has no symbol field; callers supply the requested symbol.
+    """
+
+    symbol: str
+    taker_buy_sell_ratio: float
+    taker_buy_vol: float
+    taker_sell_vol: float
+    ts_ms: int
+
+    @staticmethod
+    def from_rest_row(row: dict, symbol: str) -> "RawTakerLongShortRatio":
+        required = ("buySellRatio", "buyVol", "sellVol", "timestamp")
+        missing = [field for field in required if field not in row]
+        if missing:
+            raise DataIntegrityError(f"takerlongshortRatio row missing fields {missing}: {row}")
+        try:
+            return RawTakerLongShortRatio(
+                symbol=str(symbol),
+                taker_buy_sell_ratio=float(row["buySellRatio"]),
+                taker_buy_vol=float(row["buyVol"]),
+                taker_sell_vol=float(row["sellVol"]),
+                ts_ms=int(row["timestamp"]),
+            )
+        except (TypeError, ValueError) as exc:
+            raise DataIntegrityError(f"failed to parse takerlongshortRatio row: {row}: {exc}") from exc
+
+
+@dataclass(frozen=True)
 class RawExchangeInfoSymbol:
     symbol: str
     status: str

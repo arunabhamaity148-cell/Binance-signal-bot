@@ -9,7 +9,7 @@ from app.bot import DERIVATIVES_HISTORY_WINDOW_MS, LiveSnapshotCache, SignalBot
 from app.config import load_all
 from app.core.models import DerivativesState, TimestampedValue
 from app.core.time_utils import now_ms
-from app.data.binance.models import RawFundingRate, RawLongShortRatio, RawOpenInterest
+from app.data.binance.models import RawFundingRate, RawLongShortRatio, RawOpenInterest, RawTakerLongShortRatio
 
 
 class _HistoryRest:
@@ -42,7 +42,7 @@ class _HistoryRest:
 
     async def taker_long_short_ratio(self, symbol, period, limit=30, *, start_time_ms=None, end_time_ms=None):
         self._record("takerlongshortRatio", start_time_ms, end_time_ms)
-        return [RawLongShortRatio(symbol, 1.2, self.as_of_ts_ms - 1_000)]
+        return [RawTakerLongShortRatio(symbol, 1.2, 120.0, 100.0, self.as_of_ts_ms - 1_000)]
 
 
 @pytest.mark.asyncio
