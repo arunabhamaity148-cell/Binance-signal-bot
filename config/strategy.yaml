@@ -33,7 +33,7 @@ s1_liquidity_sweep:
 
 s2_volatility_compression:
   range_bars: 60                        # class: F
-  allowed_regimes: [TRENDING]           # class: E
+  allowed_regimes: [TRENDING, RANGING]  # class: E; compression precedes breakout
   range_width_max_atr_mult: 6.0         # class: F
   atr_percentile_window: 200            # class: B
   atr_percentile_max: 0.25              # class: F

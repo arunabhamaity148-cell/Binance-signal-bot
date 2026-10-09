@@ -38,9 +38,13 @@ def classify_regime(*, adx14: float | None, atr_percentile: float | None,
         return MarketRegime.UNKNOWN
     if atr_percentile is None:
         return MarketRegime.RANGING
-    if atr_percentile > 0.90 or oi_change_1h_pct > 5.0:
+    if atr_percentile > 0.90 or abs(oi_change_1h_pct) > 5.0:
         return MarketRegime.HIGH_VOLATILITY
-    if adx14 > 25.0 and abs(oi_change_1h_pct) > 1.0:
+    # ADX > 35 alone is a strong trend signal; requiring OI confirmation only
+    # for the 25-35 range avoids suppressing clearly directional markets.
+    if adx14 > 35.0:
+        return MarketRegime.TRENDING
+    if adx14 > 25.0 and abs(oi_change_1h_pct) > 0.5:
         return MarketRegime.TRENDING
     return MarketRegime.RANGING
 
