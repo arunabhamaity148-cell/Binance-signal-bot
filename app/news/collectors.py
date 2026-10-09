@@ -52,6 +52,8 @@ class SourceConfig:
     format: SourceFormat
     timeout_s: float
     credibility_weight: float
+    enabled: bool = True
+    poll_interval_s: float = 60.0
 
 
 @dataclass
@@ -101,6 +103,8 @@ def build_source_configs(news_sources_cfg: dict) -> list[SourceConfig]:
                     format=SourceFormat(entry["format"]),
                     timeout_s=float(entry["timeout_s"]),
                     credibility_weight=float(entry["credibility_weight"]),
+                    enabled=bool(entry.get("enabled", True)),
+                    poll_interval_s=float(entry.get("poll_interval_s", 60.0)),
                 )
             )
     return out
@@ -131,7 +135,7 @@ class NewsCollector:
 
     def __init__(self, retry_config: RetryConfig, client: httpx.AsyncClient | None = None) -> None:
         self._retry_config = retry_config
-        self._client = client or httpx.AsyncClient()
+        self._client = client or httpx.AsyncClient(follow_redirects=True)
         self._health: dict[str, SourceHealthState] = {}
 
     async def close(self) -> None:
