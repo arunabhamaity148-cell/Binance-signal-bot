@@ -228,13 +228,26 @@ class LiveSnapshotCache:
             updates = {}
             for (endpoint, field, _request, converter), result in zip(requests, results):
                 if isinstance(result, BaseException):
-                    logger.error("derivatives history endpoint refresh failed", extra={
+                    logger.error("derivatives_history_refresh_failed", extra={
                         "context": {"symbol": symbol, "endpoint": endpoint, "error": f"{type(result).__name__}: {result}"}
                     })
                     continue
-                updates[field] = _merge_timestamped_history(
+                converted = [converter(row, received) for row in result]
+                merged = _merge_timestamped_history(
                     getattr(derivatives, field), result, converter, received, start, as_of
                 )
+                fetched_latest_ts = max((point.event_ts_ms for point in converted), default=None)
+                merged_latest_ts = merged[-1].event_ts_ms if merged else None
+                if endpoint == "globalLongShortAccountRatio":
+                    logger.info("s3_ls_ratio_refresh", extra={"context": {
+                        "symbol": symbol, "endpoint": endpoint, "row_count": len(result),
+                        "fetched_latest_ts_ms": fetched_latest_ts,
+                        "fetched_age_ms": None if fetched_latest_ts is None else max(0, as_of - fetched_latest_ts),
+                        "merged_latest_ts_ms": merged_latest_ts,
+                        "merged_age_ms": None if merged_latest_ts is None else max(0, as_of - merged_latest_ts),
+                        "received_ts_ms": received,
+                    }})
+                updates[field] = merged
             if updates:
                 cache["derivatives"] = replace(derivatives, **updates)
 

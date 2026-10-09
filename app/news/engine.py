@@ -167,6 +167,12 @@ async def run_collection_cycle(
     from app.core.errors import NewsSourceUnavailableError
 
     for source in sources:
+        if not getattr(source, "enabled", True):
+            logger.info("news_source_disabled", extra={"context": {
+                "source": source.name, "reason": "disabled_by_configuration",
+            }})
+            diagnostic_news("NEWS", source.name, "disabled", "disabled_by_configuration")
+            continue
         try:
             raw_items = await collector.fetch_source(source)
             parsed = [parse_raw_item(item, receipt_ts_ms=receipt_ts_ms) for item in raw_items]

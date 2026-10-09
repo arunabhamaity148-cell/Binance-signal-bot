@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import Counter
 
 import pytest
@@ -47,6 +48,7 @@ class _HistoryRest:
 
 @pytest.mark.asyncio
 async def test_derivatives_periodic_refresh_runs_three_cycles_deduplicates_and_recovers(caplog):
+    caplog.set_level(logging.INFO, logger="app.bot")
     cfg = load_all()
     as_of = now_ms()
     stop = asyncio.Event()
@@ -85,6 +87,8 @@ async def test_derivatives_periodic_refresh_runs_three_cycles_deduplicates_and_r
     })
     assert len(rest.windows) == 21
     assert any(getattr(record, "context", {}).get("endpoint") == "fundingRate" for record in caplog.records)
+    assert any(record.getMessage() == "s3_ls_ratio_refresh" for record in caplog.records)
+    assert any(record.getMessage() == "derivatives_history_refresh_failed" for record in caplog.records)
 
     derivatives = cache.data["BTCUSDT"]["derivatives"]
     for series in (

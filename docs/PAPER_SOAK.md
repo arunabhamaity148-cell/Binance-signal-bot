@@ -7,6 +7,8 @@
 - S1–S5 diagnostic reasons
 - active-veto set and veto decisions
 - S3 long/short-ratio freshness
+- S3 `s3_ls_ratio_refresh` evidence: response row count, fetched timestamp/age,
+  merged timestamp/age, and `derivatives_history_refresh_failed` events
 - news-source failures and timeouts
 - errors, critical events, reconnects, stale/unhealthy events
 
@@ -68,4 +70,12 @@ The soak is **not** a profitability claim. Mark it operationally complete only w
 9. duplicate-signal and persistence behavior are clean;
 10. paper outcomes are recorded separately for later OOS/calibration review.
 
-A zero-signal interval is not automatically a bug. The monitor emits `ZERO_CANDIDATE_WINDOW` after the configured one-hour period since the last candidate; investigate it together with strategy reasons, feed health, S3 freshness, and veto counters.
+A zero-signal interval is not automatically a bug. Five-minute zero-signal
+windows remain normal. After the configured one-hour period with both recent
+candidate and signal counts at zero, the monitor emits
+`STARVATION_WARNING_ALL_STRATEGIES_REJECTED` when strategy rejection evidence
+exists. At two hours it emits either
+`STARVATION_CRITICAL_STALE_FEED` when stale/unhealthy feed evidence is also
+present, or `STARVATION_CRITICAL_ALL_STRATEGIES_REJECTED` when the pipeline is
+healthy but every strategy continues to reject. Investigate these together
+with strategy reasons, feed health, S3 freshness, and veto counters.

@@ -85,6 +85,7 @@ def bot_pids() -> list[int]:
 def new_counts() -> Counter[str]:
     return Counter({
         "lines": 0, "loop_health": 0, "strategy_eval": 0,
+        "strategy_rejected": 0,
         "candidate_created": 0, "signal_created": 0,
         "signal_published": 0, "diag_strategy": 0, "diag_veto": 0,
         "s3_data_check": 0, "s3_ls_ratio_stale": 0,
@@ -111,6 +112,8 @@ def scan_lines(lines: list[str], counts: Counter[str], strategy_reasons: Counter
             counts["diag_strategy"] += 1
             payload = parse_payload(line)
             strategy_reasons[str(payload.get("reason", "unknown"))] += 1
+            if payload.get("decision") == "rejected":
+                counts["strategy_rejected"] += 1
         if "diag_veto" in line:
             counts["diag_veto"] += 1
             payload = parse_payload(line)
@@ -181,7 +184,9 @@ def main(argv: list[str] | None = None) -> int:
     strategy_reasons: Counter[str] = Counter()
     vetoes: Counter[str] = Counter()
     news_sources: Counter[str] = Counter()
-    last_candidate_at: float | None = None
+    last_candidate_at = state.get("last_candidate_at") or started.timestamp()
+    last_rejection_at = state.get("last_rejection_at")
+    last_stale_at = state.get("last_stale_at")
     stop = False
 
     def request_stop(_signum, _frame):
@@ -210,15 +215,24 @@ def main(argv: list[str] | None = None) -> int:
             counts.update(interval_counts)
             if interval_counts["candidate_created"] or interval_counts["signal_created"]:
                 last_candidate_at = time.time()
+                state["last_candidate_at"] = last_candidate_at
+            if interval_counts["strategy_rejected"]:
+                last_rejection_at = time.time()
+                state["last_rejection_at"] = last_rejection_at
+            if interval_counts["stale_or_unhealthy"]:
+                last_stale_at = time.time()
+                state["last_stale_at"] = last_stale_at
         except FileNotFoundError:
             context["log_missing"] = True
         except OSError as exc:
             context["log_error"] = f"{type(exc).__name__}: {exc}"
 
-        loop = context.get("latest_loop", {})
+        loop = context.get("latest_loop", {}) or state.get("latest_loop", {})
+        if context.get("latest_loop"):
+            state["latest_loop"] = context["latest_loop"]
         pids = bot_pids()
         active = active_vetoes(Path(args.config))
-        zero_signal_seconds = None if last_candidate_at is None else max(0, time.time() - last_candidate_at)
+        zero_signal_seconds = max(0, time.time() - last_candidate_at)
         alerts: list[str] = []
         if not pids:
             alerts.append("BOT_PROCESS_MISSING")
@@ -229,8 +243,14 @@ def main(argv: list[str] | None = None) -> int:
         if loop.get("snapshots_ready") is not None and loop.get("snapshot_total") is not None:
             if loop["snapshots_ready"] < loop["snapshot_total"]:
                 alerts.append("SNAPSHOTS_NOT_READY")
-        if zero_signal_seconds is not None and zero_signal_seconds >= args.zero_signal_alert_minutes * 60:
-            alerts.append("ZERO_CANDIDATE_WINDOW")
+        loop_zero = loop.get("candidates_last_5min") == 0 and loop.get("signals_last_5min") == 0
+        if loop_zero and zero_signal_seconds >= args.zero_signal_alert_minutes * 60:
+            alerts.append("STARVATION_WARNING_ALL_STRATEGIES_REJECTED" if last_rejection_at else "ZERO_CANDIDATE_WINDOW")
+        if loop_zero and zero_signal_seconds >= max(2 * 60 * 60, 2 * args.zero_signal_alert_minutes * 60):
+            if last_stale_at and last_stale_at >= (last_candidate_at or 0):
+                alerts.append("STARVATION_CRITICAL_STALE_FEED")
+            elif last_rejection_at:
+                alerts.append("STARVATION_CRITICAL_ALL_STRATEGIES_REJECTED")
         if active and set(active) != EXPECTED_ACTIVE:
             alerts.append("ACTIVE_VETO_SET_MISMATCH")
 
