@@ -16,6 +16,7 @@ g2_feed_health:
   severity: CRITICAL
 
 g3_depth_collapse:
+  enabled: false   # audit 2026-10-10
   min_depth_usd:
     majors: 200000                      # class: C
     mid_caps: 75000                     # class: C
@@ -49,6 +50,7 @@ g6_funding_extreme:
   degrade_max_grade: "B"
 
 g7_news_shock:
+  enabled: false   # audit 2026-10-10
   min_severity_for_block: HIGH
   severity: HIGH
 
@@ -65,11 +67,13 @@ g9_btc_regime:
   degrade_max_grade: "B"
 
 g10_orderbook_instability:
+  enabled: false   # audit 2026-10-10
   lopsidedness_ratio: 10.0              # class: E
   depth_stale_ms: 500                   # class: E
   severity: CRITICAL
 
 g11_execution_quality:
+  enabled: false   # audit 2026-10-10
   max_acceptable_slippage_bps:
     majors: 3                           # class: C
     mid_caps: 8                         # class: C
@@ -79,16 +83,19 @@ g11_execution_quality:
   action: DEGRADE
 
 g12_self_consistency:
+  enabled: false   # audit 2026-10-10
   relative_tolerance: 0.000001          # class: B
   severity: CRITICAL
 
 g13_oi_divergence:
+  enabled: false   # audit 2026-10-10
   divergence_window: 12                 # class: F
   oi_divergence_min_pct: 0.03           # class: F
   severity: HIGH
   exempt_strategies: [S3, S5]
 
 g14_oi_stagnation:
+  enabled: false   # audit 2026-10-10
   window_bars: 12                       # class: F
   oi_noise_band: 0.005                  # class: E
   strong_move_atr_mult: 1.5             # class: F
@@ -98,6 +105,7 @@ g14_oi_stagnation:
   exempt_strategies: [S1]
 
 g15_oi_percentile_extreme:
+  enabled: false   # audit 2026-10-10
   high_threshold: 0.95                  # class: F
   low_threshold: 0.05                   # class: F
   min_history_days: 20                  # class: E
