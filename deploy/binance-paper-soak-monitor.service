@@ -1,0 +1,18 @@
+[Unit]
+Description=Binance Signal Bot 72-hour paper-soak monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Binance-signal-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/Binance-signal-bot/venv/bin/python /home/ubuntu/Binance-signal-bot/scripts/paper_soak_monitor.py --log /home/ubuntu/binance_bot.log --output-dir /home/ubuntu/Binance-signal-bot/runtime/paper_soak --config /home/ubuntu/Binance-signal-bot/config/veto.yaml --hours 72 --interval-seconds 60
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

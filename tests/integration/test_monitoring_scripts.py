@@ -1,6 +1,7 @@
 from __future__ import annotations
 import sqlite3
 from scripts.smoke_test import main as smoke_main
+from scripts.paper_soak_monitor import main as paper_soak_main
 from scripts.soak_test import main as soak_main
 
 def test_offline_smoke_runs_signal_pipeline_and_persists_to_separate_journal(tmp_path,monkeypatch,capsys):
@@ -22,3 +23,12 @@ def test_short_soak_script_reports_partial_pending_not_completed(tmp_path,capsys
     assert "status: PENDING" in output
     assert "COMPLETED" not in output
     assert journal.is_file()
+
+
+def test_live_paper_soak_monitor_is_distinct_from_synthetic_soak(tmp_path):
+    log = tmp_path / "bot.log"
+    log.write_text("[INFO] app.bot: loop_health | {'ws_connected': True, 'snapshots_ready': 1, 'snapshot_total': 1}\n")
+    output = tmp_path / "paper-soak"
+    assert paper_soak_main(["--log", str(log), "--output-dir", str(output), "--hours", "0.0000001", "--interval-seconds", "0.001"]) == 0
+    assert (output / "metrics.jsonl").is_file()
+    assert (output / "summary.json").is_file()
