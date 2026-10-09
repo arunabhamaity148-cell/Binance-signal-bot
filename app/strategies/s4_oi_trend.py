@@ -35,6 +35,14 @@ logger = get_logger(__name__)
 class S4OiTrend(StrategyBase):
     strategy_id = "S4"
 
+    @staticmethod
+    def _skip(snapshot, reason: str):
+        logger.debug(
+            "s4_eval_skip",
+            extra={"context": {"symbol": snapshot.symbol, "reason": reason}},
+        )
+        return []
+
     def evaluate(
         self,
         snapshot: MarketSnapshot,
@@ -52,7 +60,7 @@ class S4OiTrend(StrategyBase):
         bars_4h = snapshot.klines_for("4h")
 
         if len(bars_5m) < min_candles:
-            return []
+            return self._skip(snapshot, "if len(bars_5m) < min_candles:")
 
         ema_fast_period = cfg["ema_fast_period"]
         ema_slow_period = cfg["ema_slow_period"]
@@ -60,11 +68,11 @@ class S4OiTrend(StrategyBase):
 
         required_1h = ema_slow_period + ema_slope_lookback + 1
         if len(bars_1h) < required_1h:
-            return []  # fail-closed: insufficient 1H history
+            return self._skip(snapshot, "if len(bars_1h) < required_1h:")
         if len(bars_4h) < ema_slow_period:
-            return []  # fail-closed: HTF (4H) data missing/insufficient
+            return self._skip(snapshot, "if len(bars_4h) < ema_slow_period:")
         if len(bars_15m) < cfg["structure_swing_count"] * 2 + cfg["structure_swing_lookback"] * 2 + 5:
-            return []  # fail-closed: insufficient 15m structure history
+            return self._skip(snapshot, "if len(bars_15m) < cfg['structure_swing_count'] * 2 + cfg['structure_swing_lookback'] * 2 + 5:")
 
         closes_1h = [b.close for b in bars_1h]
         closes_4h = [b.close for b in bars_4h]
@@ -77,27 +85,27 @@ class S4OiTrend(StrategyBase):
             ema_slow_4h = ema_series(closes_4h, ema_slow_period)[-1]
             atr14_5m = wilder_atr(bars_5m, period=atr_period)
         except InsufficientDataError:
-            return []
+            return self._skip(snapshot, "except InsufficientDataError:")
 
         if atr14_1h <= 0 or atr14_5m <= 0:
-            return []
+            return self._skip(snapshot, "if atr14_1h <= 0 or atr14_5m <= 0:")
 
         ema_fast_now = ema_fast_series_1h[-1]
         ema_slow_now = ema_slow_series_1h[-1]
 
         slope_lookback_idx = -(ema_slope_lookback + 1)
         if abs(slope_lookback_idx) > len(ema_fast_series_1h):
-            return []
+            return self._skip(snapshot, "if abs(slope_lookback_idx) > len(ema_fast_series_1h):")
         ema_fast_prior = ema_fast_series_1h[slope_lookback_idx]
         ema_slope_fast = (ema_fast_now - ema_fast_prior) / atr14_1h
 
         # OI data required and must be fresh.
         if snapshot.derivatives is None:
-            return []
+            return self._skip(snapshot, "if snapshot.derivatives is None:")
         oi_stale_ms = cfg["oi_stale_ms"]
         oi_series_5m = snapshot.derivatives.open_interest_history_5m
         if not oi_series_5m:
-            return []
+            return self._skip(snapshot, "if not oi_series_5m:")
         latest_oi_point = oi_series_5m[-1]
         if is_stale(
             event_ts_ms=latest_oi_point.event_ts_ms,
@@ -105,16 +113,16 @@ class S4OiTrend(StrategyBase):
             as_of_ts_ms=snapshot.as_of_ts_ms,
             staleness_budget_ms=oi_stale_ms,
         ):
-            return []
+            return self._skip(snapshot, "):")
 
         oi_window_bars = cfg["oi_window_bars"]
         oi_values = oi_series_for_window(oi_series_5m, snapshot.as_of_ts_ms, oi_stale_ms * 50)
         if len(oi_values) < oi_window_bars + 1:
-            return []
+            return self._skip(snapshot, "if len(oi_values) < oi_window_bars + 1:")
         oi_now = oi_values[-1]
         oi_prior = oi_values[-(oi_window_bars + 1)]
         if oi_prior == 0:
-            return []
+            return self._skip(snapshot, "if oi_prior == 0:")
         oi_delta_pct = (oi_now - oi_prior) / oi_prior * 100
 
         candidates: list[CandidateSignal] = []
@@ -244,6 +252,7 @@ class S4OiTrend(StrategyBase):
             "final": confidence}})
         meta["confidence_breakdown"] = {"ema_slope_atr": ema_slope_fast,
                                          "oi_delta_pct": oi_delta_pct, "final": confidence}
+        logger.debug("s4_candidate_created | symbol=%s | direction=%s | confidence=%s", snapshot.symbol, direction.value, confidence)
         return CandidateSignal(
             symbol=snapshot.symbol,
             direction=direction,

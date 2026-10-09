@@ -38,6 +38,14 @@ logger = get_logger(__name__)
 class S2VolatilityCompression(StrategyBase):
     strategy_id = "S2"
 
+    @staticmethod
+    def _skip(snapshot, reason: str):
+        logger.debug(
+            "s2_eval_skip",
+            extra={"context": {"symbol": snapshot.symbol, "reason": reason}},
+        )
+        return []
+
     def evaluate(
         self,
         snapshot: MarketSnapshot,
@@ -58,22 +66,22 @@ class S2VolatilityCompression(StrategyBase):
         # min_candles floor.
         required = max(min_candles, range_bars + percentile_window + atr_period + 1)
         if len(bars_5m) < required:
-            return []
+            return self._skip(snapshot, "if len(bars_5m) < required:")
 
         bars_15m = snapshot.klines_for("15m")
         if len(bars_15m) < 2:
-            return []  # 15m compression confirmation context required
+            return self._skip(snapshot, "if len(bars_15m) < 2:")
 
         try:
             atr_series = wilder_atr_series(bars_5m, period=atr_period)
         except InsufficientDataError:
-            return []
+            return self._skip(snapshot, "except InsufficientDataError:")
         if len(atr_series) < percentile_window + 1:
-            return []
+            return self._skip(snapshot, "if len(atr_series) < percentile_window + 1:")
 
         atr14 = atr_series[-1]
         if atr14 <= 0:
-            return []
+            return self._skip(snapshot, "if atr14 <= 0:")
 
         atr_history = atr_series[-(percentile_window + 1):-1]
         atr_percentile = percentile_rank(atr14, atr_history)
@@ -81,7 +89,7 @@ class S2VolatilityCompression(StrategyBase):
         i = len(bars_5m) - 1
         window_bars = bars_5m[i - range_bars:i]  # bars i-N .. i-1, excludes current (no look-ahead)
         if len(window_bars) < range_bars:
-            return []
+            return self._skip(snapshot, "if len(window_bars) < range_bars:")
 
         range_high = max(b.high for b in window_bars)
         range_low = min(b.low for b in window_bars)
@@ -92,22 +100,22 @@ class S2VolatilityCompression(StrategyBase):
             and atr_percentile <= cfg["atr_percentile_max"]
         )
         if not compression:
-            return []
+            return self._skip(snapshot, "if not compression:")
 
         volumes = [b.volume for b in window_bars]
         try:
             median_volume = rolling_median(volumes)
         except InsufficientDataError:
-            return []
+            return self._skip(snapshot, "except InsufficientDataError:")
         if median_volume <= 0:
-            return []
+            return self._skip(snapshot, "if median_volume <= 0:")
 
         # OI confirmation is mandatory (S2 does not degrade to price-only).
         if snapshot.derivatives is None:
-            return []
+            return self._skip(snapshot, "if snapshot.derivatives is None:")
         oi_series_5m = snapshot.derivatives.open_interest_history_5m
         if len(oi_series_5m) < 2:
-            return []
+            return self._skip(snapshot, "if len(oi_series_5m) < 2:")
         latest_oi = oi_series_5m[-1]
         if is_stale(
             event_ts_ms=latest_oi.event_ts_ms,
@@ -115,11 +123,11 @@ class S2VolatilityCompression(StrategyBase):
             as_of_ts_ms=snapshot.as_of_ts_ms,
             staleness_budget_ms=cfg["oi_stale_ms"],
         ):
-            return []
+            return self._skip(snapshot, "):")
         oi_now = oi_series_5m[-1].value
         oi_prior = oi_series_5m[-2].value
         if oi_prior == 0:
-            return []
+            return self._skip(snapshot, "if oi_prior == 0:")
         oi_delta_pct = (oi_now - oi_prior) / oi_prior * 100
 
         current = bars_5m[i]
@@ -203,6 +211,7 @@ class S2VolatilityCompression(StrategyBase):
             "min_oi_chg_pct": cfg["min_oi_chg_pct"],
         }
 
+        logger.debug("s2_candidate_created | symbol=%s | direction=%s | confidence=%s", snapshot.symbol, "LONG", confidence)
         return CandidateSignal(
             symbol=snapshot.symbol,
             direction=Direction.LONG,
@@ -275,6 +284,7 @@ class S2VolatilityCompression(StrategyBase):
             "min_oi_chg_pct": cfg["min_oi_chg_pct"],
         }
 
+        logger.debug("s2_candidate_created | symbol=%s | direction=%s | confidence=%s", snapshot.symbol, "SHORT", confidence)
         return CandidateSignal(
             symbol=snapshot.symbol,
             direction=Direction.SHORT,

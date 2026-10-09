@@ -43,6 +43,14 @@ logger = get_logger(__name__)
 class S5OiRegime(StrategyBase):
     strategy_id = "S5"
 
+    @staticmethod
+    def _skip(snapshot, reason: str):
+        logger.debug(
+            "s5_eval_skip",
+            extra={"context": {"symbol": snapshot.symbol, "reason": reason}},
+        )
+        return []
+
     def evaluate(
         self,
         snapshot: MarketSnapshot,
@@ -56,41 +64,41 @@ class S5OiRegime(StrategyBase):
 
         bars_5m = snapshot.klines_for("5m")
         if len(bars_5m) < min_candles:
-            return []
+            return self._skip(snapshot, "if len(bars_5m) < min_candles:")
 
         if snapshot.derivatives is None:
-            return []
+            return self._skip(snapshot, "if snapshot.derivatives is None:")
 
         deriv = snapshot.derivatives
         oi_stale_ms = cfg["oi_stale_ms"]
         oi_series = deriv.open_interest_history_5m
         if len(oi_series) < 13:  # need i, i-1, i-3, i-12
-            return []
+            return self._skip(snapshot, "if len(oi_series) < 13:  # need i, i-1, i-3, i-12")
         latest_oi = oi_series[-1]
         if is_stale(
             event_ts_ms=latest_oi.event_ts_ms, received_ts_ms=latest_oi.received_ts_ms,
             as_of_ts_ms=snapshot.as_of_ts_ms, staleness_budget_ms=oi_stale_ms,
         ):
-            return []
+            return self._skip(snapshot, "):")
 
         oi_history_1d = deriv.open_interest_history_1d
         window_days = cfg["oi_percentile_window_days"]
         if len(oi_history_1d) < window_days:
-            return []
+            return self._skip(snapshot, "if len(oi_history_1d) < window_days:")
 
         try:
             atr14 = wilder_atr(bars_5m, period=atr_period)
         except InsufficientDataError:
-            return []
+            return self._skip(snapshot, "except InsufficientDataError:")
         if atr14 <= 0:
-            return []
+            return self._skip(snapshot, "if atr14 <= 0:")
 
         oi_now = oi_series[-1].value
         oi_1_ago = oi_series[-2].value
         oi_3_ago = oi_series[-4].value
         oi_12_ago = oi_series[-13].value
         if 0 in (oi_1_ago, oi_3_ago, oi_12_ago):
-            return []
+            return self._skip(snapshot, "if 0 in (oi_1_ago, oi_3_ago, oi_12_ago):")
 
         oi_delta_5m = (oi_now - oi_1_ago) / oi_1_ago
         oi_delta_15m = (oi_now - oi_3_ago) / oi_3_ago
@@ -98,14 +106,14 @@ class S5OiRegime(StrategyBase):
 
         noise_band = cfg["oi_noise_band"]
         if abs(oi_delta_5m) < noise_band:
-            return []  # noise-band: no meaningful change -> NO TRADE
+            return self._skip(snapshot, "if abs(oi_delta_5m) < noise_band:")
 
         oi_history_values = [tv.value for tv in oi_history_1d]
         oi_pct_now = percentile_rank(oi_now, oi_history_values)
 
         regime_shift_window = cfg["regime_shift_window"]
         if len(oi_series) < regime_shift_window + 1:
-            return []
+            return self._skip(snapshot, "if len(oi_series) < regime_shift_window + 1:")
         earlier_point = oi_series[-(regime_shift_window + 1)].value
         # Percentile of the earlier point against the SAME 1d history
         # window (a reasonable, consistent baseline for "where was OI
@@ -119,7 +127,7 @@ class S5OiRegime(StrategyBase):
         shift_up = oi_pct_earlier < regime_low and oi_pct_now > regime_high
         shift_down = oi_pct_earlier > regime_high and oi_pct_now < regime_low
         if not (shift_up or shift_down):
-            return []  # no regime-shift crossing detected -> NO TRADE
+            return self._skip(snapshot, "if not (shift_up or shift_down):")
 
         price_now = bars_5m[-1].close
         price_1_ago = bars_5m[-2].close
@@ -137,18 +145,18 @@ class S5OiRegime(StrategyBase):
         elif price_down and oi_down:
             quadrant = "price_down_oi_down"
         else:
-            return []  # price unchanged -> ambiguous quadrant -> NO TRADE
+            return self._skip(snapshot, "else:")
 
         # Weak quadrants are explicitly not standalone signals.
         if quadrant in ("price_up_oi_down", "price_down_oi_down"):
-            return []
+            return self._skip(snapshot, "if quadrant in ('price_up_oi_down', 'price_down_oi_down'):")
 
         if snapshot.taker_flow is None:
-            return []
+            return self._skip(snapshot, "if snapshot.taker_flow is None:")
         try:
             taker_buy_ratio = snapshot.taker_flow.taker_buy_ratio
         except ValueError:
-            return []
+            return self._skip(snapshot, "except ValueError:")
 
         # Taker flow alignment with quadrant direction.
         if quadrant == "price_up_oi_up":
@@ -158,9 +166,9 @@ class S5OiRegime(StrategyBase):
             direction = Direction.SHORT
             taker_aligned = taker_buy_ratio < 0.5
         else:
-            return []
+            return self._skip(snapshot, "else:")
         if not taker_aligned:
-            return []
+            return self._skip(snapshot, "if not taker_aligned:")
 
         # Funding veto-only filter: NOT a positive vote (see module
         # docstring). Reuses S3's funding_z calculation convention.
@@ -176,7 +184,7 @@ class S5OiRegime(StrategyBase):
             funding_opposes_long = direction == Direction.LONG and funding_z_value < -funding_veto_z
             funding_opposes_short = direction == Direction.SHORT and funding_z_value > funding_veto_z
             if funding_opposes_long or funding_opposes_short:
-                return []  # funding extreme in the OPPOSITE direction vetoes the candidate
+                return self._skip(snapshot, "if funding_opposes_long or funding_opposes_short:")
 
         entry_mode = cfg["entry_mode"]
         entry = bars_5m[-1].close if entry_mode == "market" else bars_5m[-1].close
@@ -204,7 +212,7 @@ class S5OiRegime(StrategyBase):
             bars_5m=bars_5m,
         )
         if candidate is None:
-            return []  # degenerate R (r <= 0), refuse to emit
+            return self._skip(snapshot, "if candidate is None:")
 
         # Strategy-level min R:R gate (before consensus), per spec.
         min_rr_tp2 = cfg["min_rr_tp2"]
@@ -222,9 +230,9 @@ class S5OiRegime(StrategyBase):
                 take_profit=candidate.tp2, cost=cost,
             )
         except ValueError:
-            return []
+            return self._skip(snapshot, "except ValueError:")
         if rr_tp2 <= min_rr_tp2:
-            return []
+            return self._skip(snapshot, "if rr_tp2 <= min_rr_tp2:")
 
         return self.finalize_candidates([candidate], snapshot, config)
 
@@ -276,6 +284,7 @@ class S5OiRegime(StrategyBase):
         meta["confidence_breakdown"] = {"oi_delta_5m": oi_delta_5m,
                                          "taker_buy_ratio": taker_buy_ratio,
                                          "funding_veto_z": funding_z_value, "final": confidence}
+        logger.debug("s5_candidate_created | symbol=%s | direction=%s | confidence=%s", snapshot.symbol, direction.value, confidence)
         return CandidateSignal(
             symbol=snapshot.symbol, direction=direction, strategy_source="S5",
             confidence=confidence,

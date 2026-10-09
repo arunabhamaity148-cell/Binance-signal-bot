@@ -59,6 +59,14 @@ logger = get_logger(__name__)
 class S3FundingCrowding(StrategyBase):
     strategy_id = "S3"
 
+    @staticmethod
+    def _skip(snapshot, reason: str):
+        logger.debug(
+            "s3_eval_skip",
+            extra={"context": {"symbol": snapshot.symbol, "reason": reason}},
+        )
+        return []
+
     def evaluate(
         self,
         snapshot: MarketSnapshot,
@@ -73,10 +81,10 @@ class S3FundingCrowding(StrategyBase):
         bars_5m = snapshot.klines_for("5m")
         bars_15m = snapshot.klines_for("15m")
         if len(bars_5m) < min_candles or len(bars_15m) < 10:
-            return []
+            return self._skip(snapshot, "if len(bars_5m) < min_candles or len(bars_15m) < 10:")
 
         if snapshot.derivatives is None:
-            return []  # funding data unavailable -> NO TRADE (also covers OI/ratios: same object)
+            return self._skip(snapshot, "if snapshot.derivatives is None:")
 
         deriv = snapshot.derivatives
         funding_stale_ms = cfg["funding_stale_ms"]
@@ -85,51 +93,51 @@ class S3FundingCrowding(StrategyBase):
 
         funding_z_window = cfg["funding_z_window"]
         if len(deriv.funding_rate_history) < funding_z_window:
-            return []  # insufficient funding history
+            return self._skip(snapshot, "if len(deriv.funding_rate_history) < funding_z_window:")
         latest_funding = deriv.funding_rate_history[-1]
         if is_stale(
             event_ts_ms=latest_funding.event_ts_ms, received_ts_ms=latest_funding.received_ts_ms,
             as_of_ts_ms=snapshot.as_of_ts_ms, staleness_budget_ms=funding_stale_ms,
         ):
-            return []  # funding stale -> NO TRADE
+            return self._skip(snapshot, "):")
 
         oi_series = deriv.open_interest_history_5m
         if len(oi_series) < 2:
-            return []  # OI data unavailable
+            return self._skip(snapshot, "if len(oi_series) < 2:")
         latest_oi = oi_series[-1]
         if is_stale(
             event_ts_ms=latest_oi.event_ts_ms, received_ts_ms=latest_oi.received_ts_ms,
             as_of_ts_ms=snapshot.as_of_ts_ms, staleness_budget_ms=oi_stale_ms,
         ):
-            return []  # OI stale -> NO TRADE
+            return self._skip(snapshot, "):")
 
         ls_series = deriv.long_short_account_ratio_history
         if not ls_series:
-            return []  # long/short ratio data unavailable
+            return self._skip(snapshot, "if not ls_series:")
         latest_ls = ls_series[-1]
         if is_stale(
             event_ts_ms=latest_ls.event_ts_ms, received_ts_ms=latest_ls.received_ts_ms,
             as_of_ts_ms=snapshot.as_of_ts_ms, staleness_budget_ms=ratios_stale_ms,
         ):
-            return []  # ratios stale -> NO TRADE
+            return self._skip(snapshot, "):")
 
         oi_history_1d = deriv.open_interest_history_1d
         oi_pct_window_days = cfg["oi_percentile_window_days"]
         if len(oi_history_1d) < oi_pct_window_days:
-            return []  # insufficient OI percentile history
+            return self._skip(snapshot, "if len(oi_history_1d) < oi_pct_window_days:")
 
         try:
             atr14 = wilder_atr(bars_5m, period=atr_period)
         except InsufficientDataError:
-            return []
+            return self._skip(snapshot, "except InsufficientDataError:")
         if atr14 <= 0:
-            return []
+            return self._skip(snapshot, "if atr14 <= 0:")
 
         funding_values = [tv.value for tv in deriv.funding_rate_history[-funding_z_window:]]
         try:
             funding_z = zscore(funding_values[-1], funding_values)
         except InsufficientDataError:
-            return []
+            return self._skip(snapshot, "except InsufficientDataError:")
 
         oi_history_values = [tv.value for tv in oi_history_1d]
         oi_percentile = percentile_rank(latest_oi.value, oi_history_values)
@@ -139,18 +147,18 @@ class S3FundingCrowding(StrategyBase):
 
         n_displacement = min(funding_z_window, len(bars_5m) - 1)
         if n_displacement < 1:
-            return []
+            return self._skip(snapshot, "if n_displacement < 1:")
         price_disp_atr = abs(bars_5m[-1].close - bars_5m[-1 - n_displacement].close) / atr14
 
         if abs(funding_z) < cfg["min_abs_funding_z"]:
-            return []
+            return self._skip(snapshot, "if abs(funding_z) < cfg['min_abs_funding_z']:")
         if oi_percentile < cfg["min_oi_pct_rank"]:
-            return []
+            return self._skip(snapshot, "if oi_percentile < cfg['min_oi_pct_rank']:")
         ls_extreme = ls_ratio_pct >= cfg["ls_ratio_pct_high"] or ls_ratio_pct <= cfg["ls_ratio_pct_low"]
         if not ls_extreme:
-            return []
+            return self._skip(snapshot, "if not ls_extreme:")
         if price_disp_atr < cfg["min_price_disp_atr"]:
-            return []
+            return self._skip(snapshot, "if price_disp_atr < cfg['min_price_disp_atr']:")
 
         # Crowd direction: positive funding + long-skewed ratio -> longs
         # crowded (watch for SHORT reversal). Negative funding +
@@ -158,14 +166,14 @@ class S3FundingCrowding(StrategyBase):
         longs_crowded = funding_z > 0 and ls_ratio_pct >= cfg["ls_ratio_pct_high"]
         shorts_crowded = funding_z < 0 and ls_ratio_pct <= cfg["ls_ratio_pct_low"]
         if not (longs_crowded or shorts_crowded):
-            return []  # funding and ratio disagree on crowd direction -> ambiguous, fail closed
+            return self._skip(snapshot, "if not (longs_crowded or shorts_crowded):")
 
         if snapshot.taker_flow is None:
-            return []  # taker-flow flip confirmation required
+            return self._skip(snapshot, "if snapshot.taker_flow is None:")
         try:
             taker_buy_ratio = snapshot.taker_flow.taker_buy_ratio
         except ValueError:
-            return []
+            return self._skip(snapshot, "except ValueError:")
 
         swing_lookback = 3  # shares S1/S4's default; not separately configured for S3 in CONFIG_SCHEMAS.md
         swing_count_needed = 1
@@ -276,6 +284,7 @@ class S3FundingCrowding(StrategyBase):
         }
 
         logger.info("s3_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, "funding_z": funding_z, "oi_percentile": oi_percentile, "price_disp_atr": price_disp_atr, "final": min(1.0, 0.4 + 0.1 * abs(funding_z))}})
+        logger.debug("s3_candidate_created | symbol=%s | direction=%s | confidence=%s", snapshot.symbol, "SHORT", min(1.0, 0.4 + 0.1 * abs(funding_z)))
         return CandidateSignal(
             symbol=snapshot.symbol, direction=Direction.SHORT, strategy_source="S3",
             confidence=min(1.0, 0.4 + 0.1 * abs(funding_z)),
@@ -336,6 +345,7 @@ class S3FundingCrowding(StrategyBase):
         }
 
         logger.info("s3_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, "funding_z": funding_z, "oi_percentile": oi_percentile, "price_disp_atr": price_disp_atr, "final": min(1.0, 0.4 + 0.1 * abs(funding_z))}})
+        logger.debug("s3_candidate_created | symbol=%s | direction=%s | confidence=%s", snapshot.symbol, "LONG", min(1.0, 0.4 + 0.1 * abs(funding_z)))
         return CandidateSignal(
             symbol=snapshot.symbol, direction=Direction.LONG, strategy_source="S3",
             confidence=min(1.0, 0.4 + 0.1 * abs(funding_z)),
