@@ -170,7 +170,7 @@ class S3FundingCrowding(StrategyBase):
         try:
             funding_z = zscore(funding_values[-1], funding_values)
         except InsufficientDataError:
-            return self._skip(snapshot, "s3_prereq_other", {"branch": "atr_insufficient"})
+            return self._skip(snapshot, "s3_prereq_other", {"branch": "funding_z_insufficient"})
 
         oi_history_values = [tv.value for tv in oi_history_1d]
         oi_percentile = percentile_rank(latest_oi.value, oi_history_values)
@@ -229,6 +229,8 @@ class S3FundingCrowding(StrategyBase):
                     taker_flip=bool(candidate.meta.get("taker_flip")),
                 )
                 candidates.append(candidate)
+        elif longs_crowded:
+            self._prerequisite_rejected(snapshot, "s3_prereq_other", {"branch": "structure_swing_low_missing"})
 
         if shorts_crowded and len(highs_idx) >= swing_count_needed:
             candidate = self._evaluate_long_reversal(
@@ -245,6 +247,8 @@ class S3FundingCrowding(StrategyBase):
                     taker_flip=bool(candidate.meta.get("taker_flip")),
                 )
                 candidates.append(candidate)
+        elif shorts_crowded:
+            self._prerequisite_rejected(snapshot, "s3_prereq_other", {"branch": "structure_swing_high_missing"})
 
         return self.finalize_candidates(candidates, snapshot, config)
 
@@ -276,16 +280,19 @@ class S3FundingCrowding(StrategyBase):
         current_close = bars_15m[-1].close
         structure_break = current_close < most_recent_low
         if not structure_break:
+            self._prerequisite_rejected(snapshot, "s3_prereq_no_structure_break")
             return None
 
         taker_flip = taker_buy_ratio < 0.5  # flow flips toward selling
         if not taker_flip:
+            self._prerequisite_rejected(snapshot, "s3_prereq_no_taker_flip")
             return None
 
         entry = most_recent_low  # retest of the broken structure level
         sl_buffer_atr = cfg["sl_buffer_atr"]
         stop_loss = most_recent_low + sl_buffer_atr * atr14
         if stop_loss <= entry:
+            self._prerequisite_rejected(snapshot, "s3_prereq_other", {"branch": "short_stop_invalid"})
             return None
 
         r = stop_loss - entry
@@ -338,16 +345,19 @@ class S3FundingCrowding(StrategyBase):
         current_close = bars_15m[-1].close
         structure_break = current_close > most_recent_high
         if not structure_break:
+            self._prerequisite_rejected(snapshot, "s3_prereq_no_structure_break")
             return None
 
         taker_flip = taker_buy_ratio > 0.5
         if not taker_flip:
+            self._prerequisite_rejected(snapshot, "s3_prereq_no_taker_flip")
             return None
 
         entry = most_recent_high
         sl_buffer_atr = cfg["sl_buffer_atr"]
         stop_loss = most_recent_high - sl_buffer_atr * atr14
         if stop_loss >= entry:
+            self._prerequisite_rejected(snapshot, "s3_prereq_other", {"branch": "long_stop_invalid"})
             return None
 
         r = entry - stop_loss

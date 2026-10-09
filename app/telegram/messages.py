@@ -18,7 +18,7 @@ def format_startup_message(*, symbols: list[str], delta_available: bool, uptime_
         f"📊 Universe: `{len(symbols)}` symbols",
         f"🔁 Delta converter: {delta}",
         "⚠️ Advisory messages only · no orders are placed",
-        "🛡️ Guards: G1–G15 active",
+        "🛡️ Active guards: G1, G2, G4, G5, G6, G8, G9",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"🆔 START-{now:%Y%m%d-%H%M}",
     ])

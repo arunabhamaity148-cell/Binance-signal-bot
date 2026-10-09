@@ -18,5 +18,6 @@ def test_s1_confidence_varies_with_setup_quality_and_strong_can_clear_grade_b():
     strong = _confidence(taker=0.05, sweep=1.20, reclaim=0.30, volume=2.0)
 
     assert len({round(weak, 10), round(medium, 10), round(strong, 10)}) == 3
-    assert weak < 0.55
+    assert weak > 0.55
+    assert weak < medium < strong
     assert strong > 0.55

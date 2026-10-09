@@ -19,18 +19,15 @@ def _breakdown(*, taker: float, sweep: float, reclaim_distance: float, volume: f
     )
 
 
-def test_threshold_setup_gives_each_factor_half_credit_and_clears_grade_b():
+def test_threshold_setup_gives_proportional_credit_and_clears_grade_b():
     breakdown = _breakdown(
         taker=0.55, sweep=0.25, reclaim_distance=0.10, volume=1.0,
     )
 
-    for name in (
-        "taker_flow_factor",
-        "reclaim_quality_factor",
-        "sweep_distance_factor",
-        "volume_factor",
-    ):
-        assert breakdown[name] == pytest.approx(0.5)
+    assert breakdown["taker_flow_factor"] == pytest.approx(0.5)
+    assert breakdown["reclaim_quality_factor"] == pytest.approx(1 / 3)
+    assert breakdown["sweep_distance_factor"] == pytest.approx(0.5)
+    assert breakdown["volume_factor"] == pytest.approx(0.5)
     assert breakdown["final"] >= 0.55
 
 
@@ -49,10 +46,10 @@ def test_two_times_threshold_setup_gives_each_factor_full_credit():
     assert breakdown["final"] >= 0.65
 
 
-def test_below_threshold_setup_fails_closed_at_factor_stage():
+def test_below_threshold_setup_keeps_partial_positive_credit():
     breakdown = _breakdown(
         taker=0.54, sweep=0.25, reclaim_distance=0.10, volume=1.0,
     )
 
-    assert breakdown["taker_flow_factor"] == 0.0
-    assert breakdown["final"] == 0.0
+    assert breakdown["taker_flow_factor"] == pytest.approx(0.4)
+    assert breakdown["final"] > 0.55

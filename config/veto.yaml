@@ -10,22 +10,24 @@ g1_data_integrity:
   # no tunable threshold - structural check
 
 g2_feed_health:
+  enabled: true
   feed_gap_threshold_ms: 10000          # class: E
   max_reconnects_per_window: 5          # class: E
   reconnect_window_min: 5               # class: E
   severity: CRITICAL
 
 g3_depth_collapse:
-  enabled: false   # audit 2026-10-10
+  enabled: false  # Disabled 2026-10-10 after audit: Binance depth does not represent Delta execution liquidity
   min_depth_usd:
     majors: 200000                      # class: C
     mid_caps: 75000                     # class: C
     small_caps: 30000                   # class: C
-  depth_check_levels: 20                 # class: E
+  depth_check_levels: 20                # class: E; use the full depth20 snapshot
   depth_stale_ms: 500                   # class: E
   severity: CRITICAL
 
 g4_spread_explosion:
+  enabled: true
   max_spread_bps:
     majors: 5                           # class: C
     mid_caps: 12                        # class: C
@@ -34,6 +36,7 @@ g4_spread_explosion:
   severity: HIGH
 
 g5_oi_anomaly:
+  enabled: true
   oi_anomaly_pct: 0.08                  # class: E
   oi_stale_ms: 90000                    # class: E
   # source: 3 x live-OI poll interval (30s). See app/data/derivatives.py
@@ -44,17 +47,19 @@ g5_oi_anomaly:
   severity: CRITICAL
 
 g6_funding_extreme:
+  enabled: true
   hard_funding_z_threshold: 3.5         # class: F
   severity: MEDIUM
   action: DEGRADE
   degrade_max_grade: "B"
 
 g7_news_shock:
-  enabled: false   # audit 2026-10-10
+  enabled: false  # Disabled 2026-10-10 after audit: free news feeds are delayed by 15-60 minutes
   min_severity_for_block: HIGH
   severity: HIGH
 
 g8_volatility_flash:
+  enabled: true
   bar_range_atr_mult: 4.0               # class: F
   atr_percentile_extreme: 0.97          # class: F
   severity: HIGH
@@ -62,18 +67,19 @@ g8_volatility_flash:
   degrade_max_grade: "A"
 
 g9_btc_regime:
+  enabled: true
   severity: MEDIUM
   action: DEGRADE
   degrade_max_grade: "B"
 
 g10_orderbook_instability:
-  enabled: false   # audit 2026-10-10
+  enabled: false  # Disabled 2026-10-10 after audit: redundant with feed-health protection
   lopsidedness_ratio: 10.0              # class: E
   depth_stale_ms: 500                   # class: E
   severity: CRITICAL
 
 g11_execution_quality:
-  enabled: false   # audit 2026-10-10
+  enabled: false  # Disabled 2026-10-10 after audit: Binance slippage does not represent Delta execution
   max_acceptable_slippage_bps:
     majors: 3                           # class: C
     mid_caps: 8                         # class: C
@@ -83,19 +89,19 @@ g11_execution_quality:
   action: DEGRADE
 
 g12_self_consistency:
-  enabled: false   # audit 2026-10-10
+  enabled: false  # Disabled 2026-10-10 after audit: bug-masking consistency check is not a risk veto
   relative_tolerance: 0.000001          # class: B
   severity: CRITICAL
 
 g13_oi_divergence:
-  enabled: false   # audit 2026-10-10
+  enabled: false  # Disabled 2026-10-10 after audit: redundant with OI anomaly protection G5
   divergence_window: 12                 # class: F
   oi_divergence_min_pct: 0.03           # class: F
   severity: HIGH
   exempt_strategies: [S3, S5]
 
 g14_oi_stagnation:
-  enabled: false   # audit 2026-10-10
+  enabled: false  # Disabled 2026-10-10 after audit: redundant and over-strict for signal generation
   window_bars: 12                       # class: F
   oi_noise_band: 0.005                  # class: E
   strong_move_atr_mult: 1.5             # class: F
@@ -105,7 +111,7 @@ g14_oi_stagnation:
   exempt_strategies: [S1]
 
 g15_oi_percentile_extreme:
-  enabled: false   # audit 2026-10-10
+  enabled: false  # Disabled 2026-10-10 after audit: over-fits historical OI distributions
   high_threshold: 0.95                  # class: F
   low_threshold: 0.05                   # class: F
   min_history_days: 20                  # class: E
@@ -113,9 +119,9 @@ g15_oi_percentile_extreme:
   applies_to_strategies: [S4]
 
 g16_multi_tf_confluence:
-  enabled: false  # Disabled 2026-10-10 after audit: over-fits multi-timeframe confluence against S1 range hunting                          # class: E
+  enabled: false                          # Disabled 2026-10-10 after audit: over-fits multi-timeframe confluence against S1 range hunting
   htf_1h_ema_fast: 21                     # class: E
   htf_1h_ema_slow: 55                     # class: E
-  htf_4h_structure_bars: 40               # class: E
+  htf_4h_structure_bars: 40               # class: E; ~6.7 days for 3 confirmed swings
   severity: HIGH
   action: BLOCK

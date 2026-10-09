@@ -67,7 +67,10 @@ s3_funding_crowding:
   min_price_disp_atr: 2.5               # class: F
   sl_buffer_atr: 0.6                    # class: F
   tp_r_multiples: [1.0, 2.0, 3.0, 4.0]  # class: B
-  funding_stale_ms: 34200000            # class: A; 9.5h = 34200000ms (Binance 8h funding cadence + 1.5h buffer)
+  # class: A — Binance publishes funding every 8h. Freshness must exceed
+  # one full funding interval plus a 1.5h publication/jitter buffer
+  # (9.5h = 34200000 ms).
+  funding_stale_ms: 34200000
   oi_stale_ms: 90000                    # class: E
   # source: 3 x live-OI poll interval (30s). See app/data/derivatives.py
   # 'HYBRID OPEN-INTEREST SOURCE' docstring for the full derivation and the

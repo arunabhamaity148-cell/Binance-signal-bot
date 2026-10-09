@@ -1,6 +1,6 @@
 """End-to-end pipeline integration tests.
 
-Chain under test: MarketSnapshot -> strategy -> consensus -> veto (G1-G15)
+Chain under test: MarketSnapshot -> strategy -> consensus -> seven active vetoes
 -> risk sizing -> Signal -> SQLite.
 
 The fixture is a REALISTIC BTC 5m setup (ATR(14) ~ $200, ~0.26 ATR
@@ -164,9 +164,8 @@ def test_realistic_s1_setup_is_tradable_after_costs():
     assert (mid - c.stop_loss) / mid * 1e4 > 25, "fixture should have a realistic (>25 bps) stop"
 
 
-def test_full_guard_pass_through_all_15_guards():
-    """The critical checkpoint: every one of the 15 guards executes and
-    none blocks or degrades."""
+def test_full_guard_pass_through_all_active_guards():
+    """The critical checkpoint: every enabled guard executes and none blocks or degrades."""
     cfg = load_all()
     snap = build_realistic_s1_snapshot()
     s1 = next(s for s in all_strategies() if s.strategy_id == "S1")
@@ -176,7 +175,7 @@ def test_full_guard_pass_through_all_15_guards():
     assert out.veto_state == VetoState.PASS, out.veto_reason
     assert out.max_grade_cap is None
     assert [g.guard_name for g in out.guard_results] == [
-        "G1", "G2", "G10", "G3", "G4", "G5", "G13", "G14", "G15", "G16", "G6", "G7", "G8", "G9", "G11", "G12"]
+        "G1", "G2", "G4", "G5", "G6", "G8", "G9"]
     assert all(g.passed for g in out.guard_results)
 
 
