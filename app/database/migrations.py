@@ -12,6 +12,39 @@ import aiosqlite
 
 from app.core.errors import MigrationError
 
+_MIGRATION_4_SCRIPT = """
+    CREATE TABLE runtime_events_new (
+        event_id TEXT PRIMARY KEY NOT NULL,
+        event_type TEXT NOT NULL CHECK (event_type IN ('VETO_BLOCK', 'ERROR')),
+        created_ts_ms INTEGER NOT NULL,
+        severity TEXT,
+        guard_name TEXT,
+        symbol TEXT,
+        strategy_source TEXT,
+        source TEXT,
+        exception_type TEXT,
+        message TEXT NOT NULL,
+        CHECK (
+            (event_type = 'VETO_BLOCK' AND guard_name GLOB 'G[1-9]')
+            OR (event_type = 'VETO_BLOCK' AND guard_name GLOB 'G[1-9][0-9]')
+            OR (event_type = 'ERROR' AND severity IN ('ERROR','CRITICAL'))
+        )
+    );
+
+    INSERT INTO runtime_events_new
+        SELECT * FROM runtime_events;
+
+    DROP TABLE runtime_events;
+
+    ALTER TABLE runtime_events_new RENAME TO runtime_events;
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_events_type_created
+        ON runtime_events(event_type, created_ts_ms);
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_events_guard_created
+        ON runtime_events(guard_name, created_ts_ms);
+"""
+
 _MIGRATIONS: list[tuple[int, str]] = [
     (
         1,
@@ -120,6 +153,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
             ON runtime_events(guard_name, created_ts_ms);
         """,
     ),
+    (4, _MIGRATION_4_SCRIPT),
 ]
 
 
