@@ -155,6 +155,7 @@ def test_max_severity_for_symbol_reflects_active_events():
 
 
 import httpx
+import logging
 import pytest
 
 from app.news.collectors import NewsCollector, RetryConfig, SourceConfig, SourceFormat
@@ -196,3 +197,20 @@ async def test_run_collection_cycle_one_source_failure_does_not_abort_others():
     # source's total failure.
     assert len(engine._known_items) == 1
     assert engine._known_items[0].source_name == "good_source"
+
+
+@pytest.mark.asyncio
+async def test_run_collection_cycle_skips_disabled_source_without_failure_warning(caplog):
+    caplog.set_level(logging.INFO, logger="app.news.engine")
+    class FailIfCalledCollector:
+        async def fetch_source(self, source):
+            raise AssertionError("disabled source must not be fetched")
+
+        def health_for(self, source_name):
+            raise AssertionError("disabled source must not update health")
+
+    source = SourceConfig(name="disabled_source", url="https://disabled.example.com/feed", tier=2,
+                          format=SourceFormat.RSS, timeout_s=5.0, credibility_weight=0.7, enabled=False)
+    await run_collection_cycle(FailIfCalledCollector(), NewsEngine(NEWS_CFG), [source], receipt_ts_ms=1_000_000)
+    assert not any(record.getMessage() == "news_source_failed" for record in caplog.records)
+    assert any(record.getMessage() == "news_source_disabled" for record in caplog.records)
