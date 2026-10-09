@@ -20,7 +20,7 @@ g3_depth_collapse:
     majors: 200000                      # class: C
     mid_caps: 75000                     # class: C
     small_caps: 30000                   # class: C
-  depth_check_levels: 5                 # class: E
+  depth_check_levels: 20                 # class: E
   depth_stale_ms: 500                   # class: E
   severity: CRITICAL
 
@@ -108,6 +108,6 @@ g16_multi_tf_confluence:
   enabled: true                          # class: E
   htf_1h_ema_fast: 21                     # class: E
   htf_1h_ema_slow: 55                     # class: E
-  htf_4h_structure_bars: 20               # class: E
+  htf_4h_structure_bars: 40               # class: E
   severity: HIGH
   action: BLOCK
