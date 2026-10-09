@@ -46,12 +46,11 @@ def test_build_source_configs_includes_all_tiers():
     assert "gdelt" in names
 
 
-def test_build_source_configs_preserves_url_placeholder():
-    """Explicit requirement: placeholder URLs stay as-is, never replaced
-    with invented real URLs."""
+def test_build_source_configs_uses_concrete_sec_endpoint():
+    """The deployed registry must not ship literal placeholder URLs."""
     sources = build_source_configs(NEWS_CFG)
     sec = next(s for s in sources if s.name == "sec_press")
-    assert sec.url == "<official SEC RSS URL>"
+    assert sec.url == "https://www.sec.gov/news/pressreleases.rss"
 
 
 def test_build_retry_config_from_news_sources_yaml():

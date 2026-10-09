@@ -93,35 +93,58 @@ class S3FundingCrowding(StrategyBase):
         oi_stale_ms = cfg["oi_stale_ms"]
         ratios_stale_ms = cfg["ratios_stale_ms"]
 
+        def age_ms(point):
+            return None if point is None else max(0, snapshot.as_of_ts_ms - point.event_ts_ms)
+
+        funding_point = deriv.funding_rate_history[-1] if deriv.funding_rate_history else None
+        oi_point = deriv.open_interest_history_5m[-1] if deriv.open_interest_history_5m else None
+        ls_point = deriv.long_short_account_ratio_history[-1] if deriv.long_short_account_ratio_history else None
+        funding_age_ms, oi_age_ms, ls_ratio_age_ms = age_ms(funding_point), age_ms(oi_point), age_ms(ls_point)
+
+        def data_check(ok: bool, reason: str) -> None:
+            logger.info("s3_data_check", extra={"context": {
+                "symbol": snapshot.symbol, "funding_age_ms": funding_age_ms,
+                "oi_age_ms": oi_age_ms, "ls_ratio_age_ms": ls_ratio_age_ms,
+                "required_max": {"funding_ms": funding_stale_ms, "oi_ms": oi_stale_ms, "ls_ratio_ms": ratios_stale_ms},
+                "ok": ok, "reason": reason,
+            }})
+
         funding_z_window = cfg["funding_z_window"]
         if len(deriv.funding_rate_history) < funding_z_window:
-            return self._skip(snapshot, "if len(deriv.funding_rate_history) < funding_z_window:")
+            data_check(False, "funding_history_insufficient")
+            return self._skip(snapshot, "funding_history_insufficient")
         latest_funding = deriv.funding_rate_history[-1]
         if is_stale(
             event_ts_ms=latest_funding.event_ts_ms, received_ts_ms=latest_funding.received_ts_ms,
             as_of_ts_ms=snapshot.as_of_ts_ms, staleness_budget_ms=funding_stale_ms,
         ):
-            return self._skip(snapshot, "):")
+            data_check(False, "funding_stale")
+            return self._skip(snapshot, "funding_stale")
 
         oi_series = deriv.open_interest_history_5m
         if len(oi_series) < 2:
-            return self._skip(snapshot, "if len(oi_series) < 2:")
+            data_check(False, "oi_history_insufficient")
+            return self._skip(snapshot, "oi_history_insufficient")
         latest_oi = oi_series[-1]
         if is_stale(
             event_ts_ms=latest_oi.event_ts_ms, received_ts_ms=latest_oi.received_ts_ms,
             as_of_ts_ms=snapshot.as_of_ts_ms, staleness_budget_ms=oi_stale_ms,
         ):
-            return self._skip(snapshot, "):")
+            data_check(False, "oi_stale")
+            return self._skip(snapshot, "oi_stale")
 
         ls_series = deriv.long_short_account_ratio_history
         if not ls_series:
-            return self._skip(snapshot, "if not ls_series:")
+            data_check(False, "ls_ratio_history_missing")
+            return self._skip(snapshot, "ls_ratio_history_missing")
         latest_ls = ls_series[-1]
         if is_stale(
             event_ts_ms=latest_ls.event_ts_ms, received_ts_ms=latest_ls.received_ts_ms,
             as_of_ts_ms=snapshot.as_of_ts_ms, staleness_budget_ms=ratios_stale_ms,
         ):
-            return self._skip(snapshot, "):")
+            data_check(False, "ls_ratio_stale")
+            return self._skip(snapshot, "ls_ratio_stale")
+        data_check(True, "fresh")
 
         oi_history_1d = deriv.open_interest_history_1d
         oi_pct_window_days = cfg["oi_percentile_window_days"]
