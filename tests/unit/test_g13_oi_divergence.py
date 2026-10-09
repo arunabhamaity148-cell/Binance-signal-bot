@@ -1,7 +1,13 @@
-from __future__ import annotations
-from tests.veto.test_veto_guards import _base_snapshot, _empty_news, _sample_candidate, _flat_bars, VETO_CFG, FeedHealth, OrderBookState, DerivativesState, TimestampedValue, GuardAction, NewsEvent, NewsState, NewsCategory, NewsDirection, NewsSeverity, OHLC, SymbolKlines , CandidateSignal
-from app.risk import veto
-from app.core.models import GuardResult, GuardSeverity
+"""Retirement regression for removed G13 (g13_oi_divergence)."""
 
-def test_g13_exempts_s5():
-    assert veto.guard_g13_oi_divergence(_base_snapshot(),_empty_news(),_sample_candidate("S5"),VETO_CFG["g13_oi_divergence"]).passed
+from pathlib import Path
+
+import yaml
+
+from app.risk import veto
+
+
+def test_g13_oi_divergence_is_removed_from_production_stack():
+    cfg = yaml.safe_load(Path("config/veto.yaml").read_text())
+    assert "g13_oi_divergence" not in cfg
+    assert not hasattr(veto, "guard_g13_oi_divergence")

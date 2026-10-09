@@ -26,8 +26,7 @@ would defeat the entire purpose of the hybrid design (a stale value
 masquerading as fresh is worse than an honestly-stale bucketed value,
 since every downstream staleness check trusts the merge already
 happened correctly). In that case the series is left as the hist-only
-series, and downstream staleness checks (G5, G13, G14, and each
-strategy's own oi_stale_ms check) will correctly see and fail closed
+series, and downstream staleness checks (G5 and each strategy's own oi_stale_ms check) will correctly see and fail closed
 on however stale the newest surviving point actually is.
 """
 

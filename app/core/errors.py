@@ -117,7 +117,7 @@ class StrategyEvaluationError(SignalBotError):
 
 class SignalConstructionError(SignalBotError):
     """A Signal failed its construction-time validators (see
-    SIGNAL_MODEL.md invariants). Treated as a G12-class failure."""
+    SIGNAL_MODEL.md invariants). Treated as a data-integrity failure."""
 
 
 class GuardExecutionError(SignalBotError):

@@ -80,7 +80,7 @@ def test_hourly_boundary_aligns_to_next_top_of_hour():
 
 
 def test_hourly_summary_contains_requested_sections_and_operator_id():
-    msg = format_hourly_summary(report_time=datetime(2026, 10, 9, 15, tzinfo=IST), tracked_symbols=20, active_symbols=19, signals_this_hour=3, vetoes_blocked=7, strategy_counts={"S1": 1, "S2": 0, "S3": 1, "S4": 0, "S5": 1}, veto_counts={"G2": 4, "G7": 3}, top_movers=[("BTCUSDT", 62150.0, 1.2)], last_event="No new events", ws_status="connected", feed_lag_ms=120, uptime_seconds=3660, open_signals=2, open_by_grade={"A+": 0, "A": 1, "B": 1})
+    msg = format_hourly_summary(report_time=datetime(2026, 10, 9, 15, tzinfo=IST), tracked_symbols=20, active_symbols=19, signals_this_hour=3, vetoes_blocked=7, strategy_counts={"S1": 1, "S2": 0, "S3": 1, "S4": 0, "S5": 1}, veto_counts={"G2": 4, "G9": 3}, top_movers=[("BTCUSDT", 62150.0, 1.2)], last_event="No new events", ws_status="connected", feed_lag_ms=120, uptime_seconds=3660, open_signals=2, open_by_grade={"A+": 0, "A": 1, "B": 1})
     for section in ("Market Pulse", "Strategy Breakdown", "Top Movers Watched", "Veto Activity", "News Status", "Open Signals (Paper)", "System Health"):
         assert section in msg
     assert "ID: HS-20261009-15" in msg and "BTCUSDT" in msg

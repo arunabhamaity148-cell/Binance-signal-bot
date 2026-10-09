@@ -148,13 +148,9 @@ def test_veto_engine_execution_order_matches_spec(monkeypatch):
 
     mapping = {
         "guard_g1_data_integrity": "G1", "guard_g2_feed_health": "G2",
-        "guard_g10_orderbook_instability": "G10", "guard_g3_depth_collapse": "G3",
         "guard_g4_spread_explosion": "G4", "guard_g5_oi_anomaly": "G5",
-        "guard_g13_oi_divergence": "G13", "guard_g14_oi_stagnation": "G14",
-        "guard_g15_oi_percentile_extreme": "G15", "guard_g6_funding_extreme": "G6",
-        "guard_g7_news_shock": "G7", "guard_g8_volatility_flash": "G8",
-        "guard_g9_btc_regime": "G9", "guard_g11_execution_quality": "G11",
-        "guard_g12_self_consistency": "G12",
+        "guard_g6_funding_extreme": "G6", "guard_g8_volatility_flash": "G8",
+        "guard_g9_btc_regime": "G9",
     }
     for attr, name in mapping.items():
         monkeypatch.setattr(veto, attr, make_passer(name))
@@ -184,12 +180,9 @@ def test_veto_engine_degrade_applies_most_restrictive_cap(monkeypatch):
 
     for attr, name in {
         "guard_g1_data_integrity": "G1", "guard_g2_feed_health": "G2",
-        "guard_g10_orderbook_instability": "G10", "guard_g3_depth_collapse": "G3",
         "guard_g4_spread_explosion": "G4", "guard_g5_oi_anomaly": "G5",
-        "guard_g13_oi_divergence": "G13", "guard_g14_oi_stagnation": "G14",
-        "guard_g15_oi_percentile_extreme": "G15", "guard_g6_funding_extreme": "G6",
-        "guard_g7_news_shock": "G7", "guard_g11_execution_quality": "G11",
-        "guard_g12_self_consistency": "G12",
+        "guard_g6_funding_extreme": "G6", "guard_g8_volatility_flash": "G8",
+        "guard_g9_btc_regime": "G9",
     }.items():
         monkeypatch.setattr(veto, attr, passer(name))
     monkeypatch.setattr(veto, "guard_g8_volatility_flash", degrade_a)

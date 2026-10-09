@@ -16,14 +16,12 @@ endpoints with fundamentally different freshness characteristics:
       fresher by polling it more often. It IS the right source for the
       historical series every strategy's percentile/window
       calculations need (S3's oi_percentile, S4/S5's OI-delta windows,
-      G15's 30-day percentile, etc.).
+      strategy OI percentile calculations, etc.).
 
   /fapi/v1/openInterest  ("live")
       Returns the single current OI value, computed by the exchange in
       real time, with no bucketing delay. This is the right source for
-      "what is OI right now" -- exactly the question guards like G5
-      (single-bar OI anomaly) and G13/G14 (current-vs-recent divergence
-      /stagnation) are asking, and the question every strategy's
+      "what is OI right now" -- exactly the question the active G5 guard (single-bar OI anomaly) is asking, and the question every strategy's
       "current OI point" (the last element of open_interest_history_5m)
       is implicitly answering when it feeds a freshness/staleness
       check.

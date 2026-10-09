@@ -45,7 +45,7 @@ async def test_report_aggregates_only_persisted_signals_events_and_manual_outcom
                                      event_ts_ms=start + 3000, message="feed unhealthy")
         await repo.record_veto_block(guard_name="G2", symbol="ETHUSDT", strategy_source="S5",
                                      event_ts_ms=start + 4000, message="stale snapshot")
-        await repo.record_veto_block(guard_name="G10", symbol="SOLUSDT", strategy_source="S2",
+        await repo.record_veto_block(guard_name="G9", symbol="SOLUSDT", strategy_source="S2",
                                      event_ts_ms=end + 1000, message="outside day")
         await repo.record_error_event(severity="ERROR", source="app.bot", exception_type="ValueError",
                                      message="evaluation failed", event_ts_ms=start + 5000)
