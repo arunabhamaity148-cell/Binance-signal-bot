@@ -102,3 +102,11 @@ g15_oi_percentile_extreme:
   min_history_days: 20                  # class: E
   severity: HIGH
   applies_to_strategies: [S4]
+
+g16_multi_tf_confluence:
+  enabled: true                          # class: E
+  htf_1h_ema_fast: 21                     # class: E
+  htf_1h_ema_slow: 55                     # class: E
+  htf_4h_structure_bars: 20               # class: E
+  severity: HIGH
+  action: BLOCK

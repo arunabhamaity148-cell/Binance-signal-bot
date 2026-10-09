@@ -88,6 +88,11 @@ def _build_message(signal: Signal, ctx: DeliveryContext, *, concise: bool = Fals
         "⚠️ ADVISORY ONLY — VERIFY SIZING",
         "⚠️ LEVERAGE NOT SET BY BOT",
     ]
+    phase1 = []
+    if signal.sizing_multiplier < 1.0:
+        phase1.append(f"📊 Size adjusted: {signal.sizing_multiplier:.1f}x (regime={signal.regime})")
+    if signal.htf_confluence:
+        phase1.append("✅ 1H/4H confluence confirmed")
     if concise:
         advisory = ["⚠️ ADVISORY ONLY — VERIFY SIZING", "⚠️ LEVERAGE NOT SET BY BOT"]
     if compact_trade:
@@ -102,6 +107,7 @@ def _build_message(signal: Signal, ctx: DeliveryContext, *, concise: bool = Fals
             f"🎁 TP3: {_copy(_format_price(signal.tp3))} · TP4: {_copy(_format_price(signal.tp4))}",
             f"📐 R:R: {_copy('1:' + _format_rr(signal.rr_tp2))}",
             *advisory,
+            *phase1,
         ]
     else:
         lines = [
@@ -129,6 +135,7 @@ def _build_message(signal: Signal, ctx: DeliveryContext, *, concise: bool = Fals
             "└───────────────────────────────────┘",
             "",
             *advisory,
+            *phase1,
         ]
     if include_news:
         lines.extend([

@@ -128,7 +128,8 @@ def _build_snapshot_at_index(
 
 
 def generate_candidates_at_snapshot(
-    snapshot: MarketSnapshot, news_state: NewsState, strategy_cfg: dict
+    snapshot: MarketSnapshot, news_state: NewsState, strategy_cfg: dict,
+    *, regime=None, regime_logger=None,
 ) -> list[CandidateSignal]:
     """Runs every registered strategy against `snapshot` — the SAME
     app.strategies.registry.all_strategies() the live loop uses — and
@@ -136,6 +137,19 @@ def generate_candidates_at_snapshot(
     strategy logic of its own."""
     candidates: list[CandidateSignal] = []
     for strategy in all_strategies():
+        # Registry IDs map explicitly to YAML sections; this fallback keeps
+        # third-party/test strategies compatible with the old dispatcher.
+        section_names = {
+            "S1": "s1_liquidity_sweep", "S2": "s2_volatility_compression",
+            "S3": "s3_funding_crowding", "S4": "s4_oi_trend", "S5": "s5_oi_regime",
+        }
+        section = strategy_cfg.get(section_names.get(strategy.strategy_id, ""), {})
+        allowed = section.get("allowed_regimes")
+        regime_name = getattr(regime, "value", regime)
+        if regime_name is not None and regime_name not in (allowed or ()):
+            if regime_logger is not None:
+                regime_logger(strategy.strategy_id, regime_name)
+            continue
         candidates.extend(strategy.evaluate(snapshot, news_state, strategy_cfg))
     return candidates
 
@@ -282,9 +296,17 @@ def run_single_symbol_backtest(
             if grade is None:
                 continue
             representative = group[0]
+            veto_cfg = cfg.veto
+            if not all_bars.get("1h") or not all_bars.get("4h"):
+                # A 5M-only replay cannot honestly evaluate a higher-timeframe
+                # confluence edge; live snapshots always carry both inputs.
+                veto_cfg = dict(cfg.veto)
+                veto_cfg["g16_multi_tf_confluence"] = dict(
+                    cfg.veto.get("g16_multi_tf_confluence", {}), enabled=False
+                )
             veto_outcome = run_veto_engine(
                 snapshot=snapshot, news_state=news_state, candidate=representative,
-                veto_cfg=cfg.veto, symbol_tier=bt_cfg.symbol_tier, funding_z=None, btc_trend_direction=None,
+                veto_cfg=veto_cfg, symbol_tier=bt_cfg.symbol_tier, funding_z=None, btc_trend_direction=None,
             )
             if veto_outcome.veto_state.value != "PASS":
                 continue

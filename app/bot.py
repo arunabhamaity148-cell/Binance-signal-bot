@@ -13,7 +13,7 @@ from app.backtest.engine import generate_candidates_at_snapshot, grade_candidate
 from app.config import AppConfig
 from app.core.errors import SnapshotIncompleteError
 from app.core.logging import get_logger
-from app.core.models import Direction, GuardAction, NewsState, TakerFlowState, TimestampedValue
+from app.core.models import Direction, GuardAction, MarketSnapshot, NewsState, TakerFlowState, TimestampedValue
 from app.core.math import zscore, InsufficientDataError
 from app.core.time_utils import now_ms, utc_date_str
 from app.data.binance.models import (RawAggTrade, RawBookTicker, RawDepthSnapshot, RawExchangeInfoSymbol,
@@ -31,9 +31,10 @@ from app.exchanges.delta_products import DeltaProductsClient
 from app.news.collectors import NewsCollector, build_retry_config, build_source_configs
 from app.news.engine import NewsEngine, run_collection_cycle
 from app.risk.risk_engine import (CandidateDeduplicator, DailyCounters, OpenSignalRecord, RiskState,
-    apply_min_rr_gate, check_risk_limits, compute_position_size)
+    apply_min_rr_gate, check_risk_limits, combined_sizing_multiplier, compute_position_size)
 from app.risk.veto_engine import run_veto_engine
 from app.risk.btc_regime import compute_btc_trend_direction
+from app.risk.regime_detector import MarketRegime, detect_regime
 from app.signals.signal_engine import build_final_signal
 from app.telegram.formatter import DeliveryContext
 from app.telegram.queue import TelegramQueue, build_telegram_limits
@@ -716,8 +717,33 @@ class SignalBot:
 
     async def evaluate_symbol(self,snapshot,news_state):
         btc_trend_direction = self._btc_trend_for_veto()
+        regime = None
+        regime_metrics = None
+        funding_z_for_context = None
+        if isinstance(snapshot, MarketSnapshot):
+            funding_z_for_context = self._funding_z_for_snapshot(snapshot)
+            regime, regime_metrics = detect_regime(snapshot, funding_z_for_context)
+            logger.info(
+                "regime_detected | symbol=%s | regime=%s | adx=%s | atr_pct=%s | oi_chg=%s | funding_z=%s",
+                snapshot.symbol, regime.value, regime_metrics.adx14, regime_metrics.atr_percentile,
+                regime_metrics.oi_change_1h_pct, regime_metrics.funding_z,
+            )
+            if regime == MarketRegime.UNKNOWN:
+                for strategy_name in ("S1", "S2", "S3", "S4", "S5"):
+                    logger.info("strategy_skipped_by_regime | symbol=%s | strategy=%s | regime=UNKNOWN",
+                                snapshot.symbol, strategy_name)
+                return
         try:
-            candidates=generate_candidates_at_snapshot(snapshot,news_state,self.cfg.strategy)
+            if regime is None:
+                candidates=generate_candidates_at_snapshot(snapshot,news_state,self.cfg.strategy)
+            else:
+                candidates=generate_candidates_at_snapshot(
+                    snapshot, news_state, self.cfg.strategy, regime=regime,
+                    regime_logger=lambda strategy_name, regime_name: logger.info(
+                        "strategy_skipped_by_regime | symbol=%s | strategy=%s | regime=%s",
+                        snapshot.symbol, strategy_name, regime_name,
+                    ),
+                )
         except Exception as exc:
             logger.info("strategy_eval",extra={"context":{"symbol":getattr(snapshot,"symbol","UNKNOWN"),
                 "s1_cand":0,"s2_cand":0,"s3_cand":0,"s4_cand":0,"s5_cand":0,
@@ -746,7 +772,7 @@ class SignalBot:
                 continue
             candidate=group[0]
             veto=run_veto_engine(snapshot=snapshot,news_state=news_state,candidate=candidate,veto_cfg=self.cfg.veto,
-                symbol_tier=self.cfg.symbol_tier(symbol),funding_z=self._funding_z_for_snapshot(snapshot),
+                symbol_tier=self.cfg.symbol_tier(symbol),funding_z=(funding_z_for_context if regime is not None else self._funding_z_for_snapshot(snapshot)),
                 btc_trend_direction=btc_trend_direction)
             if veto.veto_state.value!="PASS":
                 reason=veto.veto_reason or "; ".join(r.reason or r.guard_name for r in veto.guard_results
@@ -773,16 +799,23 @@ class SignalBot:
                     self._log_candidate(item,grade=grade_label,veto="PASS",reason="risk_limit: "+"; ".join(violations),stage="rejected")
                 logger.info("candidate blocked by risk limits",extra={"context":{"symbol":symbol,"reasons":violations}}); continue
             pair=self.cfg.pair_config(symbol); entry=(candidate.entry_low+candidate.entry_high)/2
+            regime_name = regime.value if regime is not None else "UNKNOWN"
+            sizing_multiplier = 1.0
+            if regime is not None and regime_metrics is not None and regime_metrics.atr_percentile is not None:
+                sizing_multiplier = combined_sizing_multiplier(regime_name, regime_metrics.atr_percentile)
             sizing=compute_position_size(assumed_equity_usd=self.equity_usd,risk_per_trade_pct=self.cfg.risk["risk_per_trade_pct"],
                 entry_price=entry,stop_loss=candidate.stop_loss,qty_step=pair["qty_step"],fee_maker_bps=pair["fee_maker_bps"],
-                fee_taker_bps=pair["fee_taker_bps"],depth_usd=min(snapshot.orderbook.bid_depth_5lvl_usd,snapshot.orderbook.ask_depth_5lvl_usd))
+                fee_taker_bps=pair["fee_taker_bps"],depth_usd=min(snapshot.orderbook.bid_depth_5lvl_usd,snapshot.orderbook.ask_depth_5lvl_usd),
+                sizing_multiplier=sizing_multiplier)
             if sizing.qty<pair["min_qty"]:
                 for item in group:
                     self._log_candidate(item,grade=grade_label,veto="PASS",reason="quantity_below_pair_minimum",stage="rejected")
                 continue
             signal=build_final_signal(candidate=candidate,snapshot=snapshot,grade=grade,confidence_weighted=confidence,
                 veto_outcome=veto,size_units_advisory=sizing.qty,notional_usd_advisory=sizing.notional_usd,
-                expiry_per_grade=self.cfg.risk["expiry_per_grade"],created_ts_ms=snapshot.as_of_ts_ms)
+                expiry_per_grade=self.cfg.risk["expiry_per_grade"],created_ts_ms=snapshot.as_of_ts_ms,
+                sizing_multiplier=sizing_multiplier, regime=regime_name,
+                htf_confluence=any(r.guard_name == "G16" and r.passed for r in veto.guard_results))
             signal=self._populate_delta_fields(signal)
             if signal.veto_state!="PASS":
                 for item in group:

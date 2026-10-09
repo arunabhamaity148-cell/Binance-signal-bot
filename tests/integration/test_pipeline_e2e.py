@@ -45,6 +45,20 @@ def _flat(n, iv, price=P):
             for i in range(n)]
 
 
+def _htf_uptrend(n, iv):
+    s = NOW - (n + 1) * iv
+    bars = []
+    for i in range(n):
+        base = P + i * 10
+        high, low = base + 1, base - 1
+        if iv == 14_400_000 and i in (n - 17, n - 9):
+            high = base + (60 if i == n - 9 else 50)
+        if iv == 14_400_000 and i in (n - 13, n - 5):
+            low = base - 40
+        bars.append(OHLC(open=base, high=high, low=low, close=base, volume=100.0, close_time_ms=s + i * iv))
+    return bars
+
+
 def _common_snapshot(bars_5m, as_of, *, oi_fresh_s=30, depth=2_000_000.0, symbol="BTCUSDT"):
     ob = OrderBookState(symbol=symbol, best_bid=P - 0.05, best_ask=P + 0.05,
                         bid_depth_5lvl_usd=depth, ask_depth_5lvl_usd=depth,
@@ -56,8 +70,10 @@ def _common_snapshot(bars_5m, as_of, *, oi_fresh_s=30, depth=2_000_000.0, symbol
                             received_ts_ms=newest - (59 - i) * IV + 500) for i in range(60)]
     oi1d = [TimestampedValue(value=1_000_000 + i * 500, event_ts_ms=as_of - (30 - i) * 86_400_000,
                              received_ts_ms=as_of) for i in range(30)]
+    oi1h = [TimestampedValue(value=1_000_000, event_ts_ms=as_of - 3_600_000, received_ts_ms=as_of),
+            TimestampedValue(value=1_020_000, event_ts_ms=as_of, received_ts_ms=as_of)]
     deriv = DerivativesState(symbol=symbol, funding_rate_history=[], open_interest_history_5m=oi5,
-                             open_interest_history_15m=[], open_interest_history_1h=[],
+                             open_interest_history_15m=[], open_interest_history_1h=oi1h,
                              open_interest_history_1d=oi1d, long_short_account_ratio_history=[],
                              taker_long_short_ratio_history=[], premium_index_current=None)
     fh = {"btcusdt@aggTrade": FeedHealth(symbol=symbol, stream="btcusdt@aggTrade",
@@ -67,8 +83,8 @@ def _common_snapshot(bars_5m, as_of, *, oi_fresh_s=30, depth=2_000_000.0, symbol
         snapshot_version=f"e2e-{as_of}", symbol=symbol, as_of_ts_ms=as_of,
         klines={"5m": SymbolKlines(symbol=symbol, timeframe="5m", bars=bars_5m),
                 "15m": SymbolKlines(symbol=symbol, timeframe="15m", bars=_flat(80, 900_000)),
-                "1h": SymbolKlines(symbol=symbol, timeframe="1h", bars=_flat(80, 3_600_000)),
-                "4h": SymbolKlines(symbol=symbol, timeframe="4h", bars=_flat(80, 14_400_000))},
+                "1h": SymbolKlines(symbol=symbol, timeframe="1h", bars=_htf_uptrend(80, 3_600_000)),
+                "4h": SymbolKlines(symbol=symbol, timeframe="4h", bars=_htf_uptrend(80, 14_400_000))},
         orderbook=ob, taker_flow=tf, derivatives=deriv, feed_health=fh,
         price_tick=0.1, qty_step=0.001, min_qty=0.001, fee_maker_bps=2.0, fee_taker_bps=5.0)
 
@@ -160,7 +176,7 @@ def test_full_guard_pass_through_all_15_guards():
     assert out.veto_state == VetoState.PASS, out.veto_reason
     assert out.max_grade_cap is None
     assert [g.guard_name for g in out.guard_results] == [
-        "G1", "G2", "G10", "G3", "G4", "G5", "G13", "G14", "G15", "G6", "G7", "G8", "G9", "G11", "G12"]
+        "G1", "G2", "G10", "G3", "G4", "G5", "G13", "G14", "G15", "G16", "G6", "G7", "G8", "G9", "G11", "G12"]
     assert all(g.passed for g in out.guard_results)
 
 

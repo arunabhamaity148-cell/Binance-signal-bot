@@ -52,6 +52,9 @@ class Signal(BaseModel):
 
     size_units_advisory: float
     notional_usd_advisory: float
+    sizing_multiplier: float = 1.0
+    regime: str = "UNKNOWN"
+    htf_confluence: bool = False
 
     meta: dict
 
@@ -144,6 +147,14 @@ class Signal(BaseModel):
             raise ValueError(f"notional_usd_advisory must be >= 0, got {self.notional_usd_advisory}")
         return self
 
+    @model_validator(mode="after")
+    def _validate_phase1_metadata(self) -> "Signal":
+        if not (0.25 <= self.sizing_multiplier <= 1.0):
+            raise ValueError("sizing_multiplier must be in [0.25, 1.0]")
+        if self.regime not in {"TRENDING", "RANGING", "HIGH_VOLATILITY", "UNKNOWN"}:
+            raise ValueError(f"unknown market regime: {self.regime}")
+        return self
+
 
 def build_signal(
     *,
@@ -171,6 +182,9 @@ def build_signal(
     meta: dict,
     price_tick: float,
     qty_step: float,
+    sizing_multiplier: float = 1.0,
+    regime: str = "UNKNOWN",
+    htf_confluence: bool = False,
 ) -> Signal:
     """Construct a Signal, additionally validating price-tick and
     qty-step alignment (which require the symbol's exchange filters,
@@ -211,5 +225,8 @@ def build_signal(
         veto_reason=veto_reason,
         size_units_advisory=aligned_size,
         notional_usd_advisory=notional_usd_advisory,
+        sizing_multiplier=sizing_multiplier,
+        regime=regime,
+        htf_confluence=htf_confluence,
         meta=meta,
     )

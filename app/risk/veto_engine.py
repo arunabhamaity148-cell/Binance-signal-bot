@@ -29,6 +29,7 @@ from app.core.models import (
     VetoState,
 )
 from app.risk import veto
+from app.risk.veto_g16 import guard_g16_multi_tf_confluence
 
 
 def _safe_call(guard_name: str, fn, *args, **kwargs) -> GuardResult:
@@ -97,6 +98,12 @@ def run_veto_engine(
     results.append(_safe_call("G15", veto.guard_g15_oi_percentile_extreme, snapshot, news_state, candidate, veto_cfg["g15_oi_percentile_extreme"]))
     if _is_hard_block(results[-1]):
         return _finalize(results)
+
+    g16_cfg = veto_cfg.get("g16_multi_tf_confluence", {})
+    if g16_cfg.get("enabled", True):
+        results.append(_safe_call("G16", guard_g16_multi_tf_confluence, snapshot, news_state, candidate, g16_cfg))
+        if _is_hard_block(results[-1]):
+            return _finalize(results)
 
     results.append(_safe_call("G6", veto.guard_g6_funding_extreme, snapshot, news_state, candidate, veto_cfg["g6_funding_extreme"], funding_z=funding_z))
     # DEGRADE only, continue.

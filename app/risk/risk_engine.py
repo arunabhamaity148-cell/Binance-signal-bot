@@ -29,6 +29,34 @@ class PositionSizeResult:
     r_budget_usd: float
 
 
+def regime_size_multiplier(regime: str) -> float:
+    return {"TRENDING": 1.0, "RANGING": 0.8, "HIGH_VOLATILITY": 0.5}.get(regime, 0.0)
+
+
+def volatility_size_multiplier(atr_percentile: float) -> float:
+    if not 0.0 <= atr_percentile <= 1.0:
+        raise ValueError("atr_percentile must be in [0, 1]")
+    if atr_percentile < 0.30:
+        return 1.0
+    if atr_percentile < 0.70:
+        return 0.9
+    if atr_percentile < 0.90:
+        return 0.7
+    return 0.5
+
+
+def combined_sizing_multiplier(regime: str, atr_percentile: float) -> float:
+    """Return the bounded Phase 1 regime × volatility multiplier."""
+    multiplier = regime_size_multiplier(regime) * volatility_size_multiplier(atr_percentile)
+    return max(0.25, min(1.0, multiplier))
+
+
+def vol_adjusted_position_size(base_size: float, regime: str, atr_percentile: float) -> float:
+    if base_size < 0:
+        raise ValueError("base_size must be non-negative")
+    return base_size * combined_sizing_multiplier(regime, atr_percentile)
+
+
 def compute_position_size(
     *,
     assumed_equity_usd: float,
@@ -39,6 +67,7 @@ def compute_position_size(
     fee_maker_bps: float,
     fee_taker_bps: float,
     depth_usd: float | None,
+    sizing_multiplier: float = 1.0,
 ) -> PositionSizeResult:
     """Cash-at-stop position sizing (spec section 20), fee-inclusive.
 
@@ -72,13 +101,15 @@ def compute_position_size(
         raise ValueError("risk_per_trade_pct must be > 0")
     if qty_step <= 0:
         raise ValueError("qty_step must be > 0")
+    if not 0.25 <= sizing_multiplier <= 1.0:
+        raise ValueError("sizing_multiplier must be in [0.25, 1.0]")
 
     stop_distance = abs(entry_price - stop_loss)
     if stop_distance <= 0:
         raise ValueError("stop_distance must be > 0")
 
     direction = Direction.LONG if stop_loss < entry_price else Direction.SHORT
-    r_budget = assumed_equity_usd * (risk_per_trade_pct / 100.0)
+    r_budget = assumed_equity_usd * (risk_per_trade_pct / 100.0) * sizing_multiplier
 
     def loss_per_unit_at(notional: float) -> float:
         cost = compute_cost_breakdown(

@@ -40,6 +40,9 @@ def build_final_signal(
     notional_usd_advisory: float,
     expiry_per_grade: dict[str, float],
     created_ts_ms: int,
+    sizing_multiplier: float = 1.0,
+    regime: str = "UNKNOWN",
+    htf_confluence: bool = False,
 ) -> Signal:
     """Construct the final Signal from all upstream computation.
 
@@ -142,6 +145,9 @@ def build_final_signal(
         veto_reason=veto_outcome.veto_reason,
         size_units_advisory=size_units_advisory,
         notional_usd_advisory=notional_usd_advisory,
+        sizing_multiplier=sizing_multiplier,
+        regime=regime,
+        htf_confluence=htf_confluence,
         meta=merged_meta,
         price_tick=snapshot.price_tick,
         qty_step=snapshot.qty_step,

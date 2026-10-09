@@ -32,10 +32,13 @@ class _RecordingSender:
 def _tradable_snapshot():
     """Strengthen only synthetic bar data; all configured thresholds stay unchanged."""
     snapshot=build_realistic_s1_snapshot(); bars=list(snapshot.klines["5m"].bars)
+    for i in range(max(0, len(bars)-220), len(bars)-5):
+        bar=bars[i]
+        bars[i]=replace(bar, high=max(bar.high, bar.open+600), low=min(bar.low, bar.open-600))
     bars[-2]=replace(bars[-2],low=99_000.0)
     atr=wilder_atr(bars,14)
     l_high=max(bar.high for bar in bars[-4:-1])
-    bars[-1]=replace(bars[-1],high=l_high+0.7*atr)
+    bars[-1]=replace(bars[-1],high=l_high+0.3*atr)
     klines=dict(snapshot.klines); klines["5m"]=replace(klines["5m"],bars=bars)
     return replace(snapshot,klines=klines)
 
