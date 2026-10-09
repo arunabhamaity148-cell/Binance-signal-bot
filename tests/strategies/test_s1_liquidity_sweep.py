@@ -89,7 +89,7 @@ def test_s1_triggers_long_on_engineered_sweep():
     atr_approx = 10.0
     trigger_bar = OHLC(
         open=base_price, high=l_high + 0.5 * atr_approx, low=base_price - 3,
-        close=l_high - 0.05 * atr_approx, volume=300, close_time_ms=prev_bar.close_time_ms + 300_000,
+        close=l_high - 0.14 * atr_approx, volume=300, close_time_ms=prev_bar.close_time_ms + 300_000,
     )
     all_bars = bars + swing_bars + [prev_bar, trigger_bar]
     as_of = trigger_bar.close_time_ms + 1
@@ -118,7 +118,7 @@ def test_s1_no_trigger_when_taker_flow_insufficient_for_long():
     atr_approx = 10.0
     trigger_bar = OHLC(
         open=base_price, high=l_high + 0.5 * atr_approx, low=base_price - 3,
-        close=l_high - 0.05 * atr_approx, volume=300, close_time_ms=prev_bar.close_time_ms + 300_000,
+        close=l_high - 0.14 * atr_approx, volume=300, close_time_ms=prev_bar.close_time_ms + 300_000,
     )
     all_bars = bars + swing_bars + [prev_bar, trigger_bar]
     as_of = trigger_bar.close_time_ms + 1
@@ -144,7 +144,7 @@ def test_s1_candidate_meta_satisfies_base_contract():
     atr_approx = 10.0
     trigger_bar = OHLC(
         open=base_price, high=l_high + 0.5 * atr_approx, low=base_price - 3,
-        close=l_high - 0.05 * atr_approx, volume=300, close_time_ms=prev_bar.close_time_ms + 300_000,
+        close=l_high - 0.14 * atr_approx, volume=300, close_time_ms=prev_bar.close_time_ms + 300_000,
     )
     all_bars = bars + swing_bars + [prev_bar, trigger_bar]
     as_of = trigger_bar.close_time_ms + 1
@@ -177,7 +177,7 @@ def test_s1_tp_levels_are_exactly_k_times_r_from_entry_midpoint():
     atr_approx = 10.0
     trigger_bar = OHLC(
         open=base_price, high=l_high + 0.5 * atr_approx, low=base_price - 3,
-        close=l_high - 0.05 * atr_approx, volume=300, close_time_ms=prev_bar.close_time_ms + 300_000,
+        close=l_high - 0.14 * atr_approx, volume=300, close_time_ms=prev_bar.close_time_ms + 300_000,
     )
     all_bars = bars + swing_bars + [prev_bar, trigger_bar]
     as_of = trigger_bar.close_time_ms + 1

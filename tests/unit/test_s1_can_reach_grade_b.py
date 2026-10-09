@@ -11,7 +11,7 @@ def test_genuinely_strong_s1_setup_reaches_grade_b():
         base_confidence=0.62,
         taker_buy_ratio=0.60,
         sweep_distance=0.50,
-        reclaim_distance=0.0,
+        reclaim_distance=0.30,
         reclaim_band_atr=0.15,
         penetration_min_atr=0.25,
         volume_ratio=1.5,

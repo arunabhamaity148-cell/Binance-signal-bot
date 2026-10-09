@@ -38,7 +38,7 @@ def _tradable_snapshot():
     bars[-2]=replace(bars[-2],low=99_000.0)
     atr=wilder_atr(bars,14)
     l_high=max(bar.high for bar in bars[-4:-1])
-    bars[-1]=replace(bars[-1],high=l_high+0.3*atr)
+    bars[-1]=replace(bars[-1],high=l_high+0.3*atr,close=l_high-0.14*atr)
     klines=dict(snapshot.klines); klines["5m"]=replace(klines["5m"],bars=bars)
     return replace(snapshot,klines=klines)
 

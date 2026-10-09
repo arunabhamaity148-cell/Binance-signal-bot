@@ -56,7 +56,7 @@ def _build_fixture(*, penetration_atr_mult: float, continuation_step: float, con
     l_high = sp + 100
     trigger = OHLC(
         open=sp, high=l_high + penetration_atr_mult * atr_now, low=sp - 60,
-        close=l_high - 0.05 * atr_now, volume=300, close_time_ms=t0 + (k + 4) * IV,
+        close=l_high - 0.10 * atr_now, volume=300, close_time_ms=t0 + (k + 4) * IV,
     )
     bars_with_trigger = bars + swing_bars + [prev_bar, trigger]
     trigger_index = len(bars_with_trigger) - 1

@@ -26,7 +26,9 @@ def test_s1_evaluate_rejects_zero_reclaim_quality(caplog):
     l_high = max(bar.high for bar in bars[-4:-1])
     current = bars[-1]
     reclaim_band_atr = CFG["s1_liquidity_sweep"]["reclaim_band_atr"]
-    bars[-1] = replace(current, close=l_high - reclaim_band_atr * atr14)
+    # A tiny positive reclaim is raw-valid but below the 0.5 quality
+    # threshold after normalization, so it must fail at factor stage.
+    bars[-1] = replace(current, close=l_high - 0.01 * atr14)
     snapshot = _with_bars(snapshot, bars)
 
     caplog.set_level(logging.DEBUG, logger=LOGGER_NAME)

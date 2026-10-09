@@ -21,7 +21,7 @@ def _breakdown(*, taker: float, sweep: float, reclaim_distance: float, volume: f
 
 def test_threshold_setup_gives_each_factor_half_credit_and_clears_grade_b():
     breakdown = _breakdown(
-        taker=0.55, sweep=0.25, reclaim_distance=0.075, volume=1.0,
+        taker=0.55, sweep=0.25, reclaim_distance=0.10, volume=1.0,
     )
 
     for name in (
@@ -36,7 +36,7 @@ def test_threshold_setup_gives_each_factor_half_credit_and_clears_grade_b():
 
 def test_two_times_threshold_setup_gives_each_factor_full_credit():
     breakdown = _breakdown(
-        taker=0.60, sweep=0.50, reclaim_distance=0.0, volume=1.5,
+        taker=0.60, sweep=0.50, reclaim_distance=0.30, volume=1.5,
     )
 
     for name in (
@@ -51,7 +51,7 @@ def test_two_times_threshold_setup_gives_each_factor_full_credit():
 
 def test_below_threshold_setup_fails_closed_at_factor_stage():
     breakdown = _breakdown(
-        taker=0.54, sweep=0.25, reclaim_distance=0.075, volume=1.0,
+        taker=0.54, sweep=0.25, reclaim_distance=0.10, volume=1.0,
     )
 
     assert breakdown["taker_flow_factor"] == 0.0

@@ -128,7 +128,7 @@ def build_realistic_s1_snapshot():
     bars.append(OHLC(open=P, high=P + 100, low=P - 150, close=P - 20, volume=100.0, close_time_ms=t0 + (k + 3) * IV))
     atr_now = wilder_atr(bars, 14)
     l_high = P + 100
-    bars.append(OHLC(open=P, high=l_high + 0.26 * atr_now, low=P - 60, close=l_high - 0.05 * atr_now,
+    bars.append(OHLC(open=P, high=l_high + 0.26 * atr_now, low=P - 60, close=l_high - 0.10 * atr_now,
                      volume=300.0, close_time_ms=t0 + (k + 4) * IV))
     return _common_snapshot(bars, bars[-1].close_time_ms + 1000)
 
@@ -252,7 +252,7 @@ def test_stale_oi_blocks_realistic_setup():
         bars.append(OHLC(open=P, high=P + 100, low=P - 100, close=P, volume=100.0, close_time_ms=t0 + (k + j) * IV))
     bars.append(OHLC(open=P, high=P + 100, low=P - 150, close=P - 20, volume=100.0, close_time_ms=t0 + (k + 3) * IV))
     atr_now = wilder_atr(bars, 14)
-    bars.append(OHLC(open=P, high=P + 100 + 0.26 * atr_now, low=P - 60, close=P + 100 - 0.05 * atr_now,
+    bars.append(OHLC(open=P, high=P + 100 + 0.26 * atr_now, low=P - 60, close=P + 100 - 0.10 * atr_now,
                      volume=300.0, close_time_ms=t0 + (k + 4) * IV))
     snap = _common_snapshot(bars, bars[-1].close_time_ms + 1000, oi_fresh_s=300)
     cand = next(s for s in all_strategies() if s.strategy_id == "S1").evaluate(snap, _news(snap), cfg.strategy)

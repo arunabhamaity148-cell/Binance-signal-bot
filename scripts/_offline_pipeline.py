@@ -36,7 +36,7 @@ def build_offline_snapshot(cfg: AppConfig, symbol: str) -> MarketSnapshot:
     bars.append(OHLC(price,price+100,price-150,price-20,100.0,t0+(start+3)*iv))
     from app.core.math import wilder_atr
     atr=wilder_atr(bars,14)
-    bars.append(OHLC(price,price+100+0.60*atr,price-60,price+100-0.05*atr,300.0,t0+(start+4)*iv))
+    bars.append(OHLC(price,price+100+0.60*atr,price-60,price+100-0.14*atr,300.0,t0+(start+4)*iv))
     as_of=bars[-1].close_time_ms+1_000
     def flat(count, interval):
         begin=as_of-(count+1)*interval

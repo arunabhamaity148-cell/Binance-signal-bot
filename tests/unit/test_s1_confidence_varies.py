@@ -13,9 +13,9 @@ def _confidence(*, taker: float, sweep: float, reclaim: float, volume: float) ->
 
 
 def test_s1_confidence_varies_with_setup_quality_and_strong_can_clear_grade_b():
-    weak = _confidence(taker=0.449, sweep=0.251, reclaim=0.149, volume=0.5)
-    medium = _confidence(taker=0.30, sweep=0.60, reclaim=0.07, volume=1.0)
-    strong = _confidence(taker=0.05, sweep=1.20, reclaim=0.01, volume=2.0)
+    weak = _confidence(taker=0.46, sweep=0.251, reclaim=0.10, volume=1.0)
+    medium = _confidence(taker=0.30, sweep=0.60, reclaim=0.15, volume=1.0)
+    strong = _confidence(taker=0.05, sweep=1.20, reclaim=0.30, volume=2.0)
 
     assert len({round(weak, 10), round(medium, 10), round(strong, 10)}) == 3
     assert weak < 0.55
