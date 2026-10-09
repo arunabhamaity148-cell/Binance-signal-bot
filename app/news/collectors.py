@@ -52,6 +52,8 @@ class SourceConfig:
     format: SourceFormat
     timeout_s: float
     credibility_weight: float
+    enabled: bool = True
+    poll_interval_s: float = 60.0
 
 
 @dataclass
@@ -67,6 +69,7 @@ class SourceHealthState:
     consecutive_failures: int = 0
     total_attempts: int = 0
     total_successes: int = 0
+    disabled: bool = False
 
     def record_success(self, now_ms: int) -> None:
         self.last_success_ts_ms = now_ms
@@ -79,6 +82,16 @@ class SourceHealthState:
         self.last_attempt_ts_ms = now_ms
         self.consecutive_failures += 1
         self.total_attempts += 1
+        if self.consecutive_failures >= 5 and not self.disabled:
+            self.disabled = True
+            logger.info(
+                "news_source_disabled",
+                extra={"context": {
+                    "source": self.source_name,
+                    "reason": "five_consecutive_failures",
+                    "consecutive_failures": self.consecutive_failures,
+                }},
+            )
 
     @property
     def success_rate(self) -> float:
@@ -101,6 +114,8 @@ def build_source_configs(news_sources_cfg: dict) -> list[SourceConfig]:
                     format=SourceFormat(entry["format"]),
                     timeout_s=float(entry["timeout_s"]),
                     credibility_weight=float(entry["credibility_weight"]),
+                    enabled=bool(entry.get("enabled", True)),
+                    poll_interval_s=float(entry.get("poll_interval_s", 60.0)),
                 )
             )
     return out
@@ -131,7 +146,7 @@ class NewsCollector:
 
     def __init__(self, retry_config: RetryConfig, client: httpx.AsyncClient | None = None) -> None:
         self._retry_config = retry_config
-        self._client = client or httpx.AsyncClient()
+        self._client = client or httpx.AsyncClient(follow_redirects=True)
         self._health: dict[str, SourceHealthState] = {}
 
     async def close(self) -> None:
@@ -156,6 +171,13 @@ class NewsCollector:
         shouldn't discard every other valid entry in it).
         """
         health = self.health_for(source.name)
+        if not source.enabled:
+            health.disabled = True
+            raise NewsSourceUnavailableError(f"{source.name}: source disabled by configuration")
+        if health.disabled:
+            raise NewsSourceUnavailableError(
+                f"{source.name}: source disabled after {health.consecutive_failures} consecutive failures"
+            )
         attempt = 0
         while True:
             attempt += 1
@@ -269,6 +291,8 @@ def assess_source_health(health: SourceHealthState, *, min_success_rate: float =
     engineering default (not a class E/F config value — NEWS_REGISTRY.md
     specifies a health checker exists but not an exact threshold for
     it), defined once here rather than per-caller."""
+    if getattr(health, "disabled", False):
+        return False
     if health.total_attempts == 0:
         return True
     return health.success_rate >= min_success_rate
