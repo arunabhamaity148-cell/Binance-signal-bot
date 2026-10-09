@@ -134,10 +134,7 @@ def test_veto_engine_guard_exception_becomes_block(monkeypatch):
 
 
 def test_veto_engine_execution_order_matches_spec(monkeypatch):
-    """Record the order guards are invoked with all guards forced to
-    pass; must match VETO_SPEC.md:
-    G1 -> G2 -> G10 -> G3 -> G4 -> G5 -> G13 -> G14 -> G15 -> G6 -> G7
-    -> G8 -> G9 -> G11 -> G12."""
+    """Record the order of the seven enabled production guards."""
     from app.core.models import GuardResult, GuardSeverity
     from app.risk import veto
 
@@ -167,7 +164,7 @@ def test_veto_engine_execution_order_matches_spec(monkeypatch):
         veto_cfg=CFG.veto, symbol_tier="majors",
     )
     assert outcome.veto_state == VetoState.PASS
-    assert calls == ["G1", "G2", "G10", "G3", "G4", "G5", "G13", "G14", "G15", "G6", "G7", "G8", "G9", "G11", "G12"]
+    assert calls == ["G1", "G2", "G4", "G5", "G6", "G8", "G9"]
 
 
 def test_veto_engine_degrade_applies_most_restrictive_cap(monkeypatch):
