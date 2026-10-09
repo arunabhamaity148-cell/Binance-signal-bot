@@ -113,7 +113,7 @@ g15_oi_percentile_extreme:
   applies_to_strategies: [S4]
 
 g16_multi_tf_confluence:
-  enabled: true                          # class: E
+  enabled: false  # Disabled 2026-10-10 after audit: over-fits multi-timeframe confluence against S1 range hunting                          # class: E
   htf_1h_ema_fast: 21                     # class: E
   htf_1h_ema_slow: 55                     # class: E
   htf_4h_structure_bars: 40               # class: E
