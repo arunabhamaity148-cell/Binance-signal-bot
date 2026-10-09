@@ -48,7 +48,7 @@ async def handle_help(ctx: CommandContext) -> str:
     body = ["📚 OPERATOR COMMANDS"] + [f"/{name} — {description}" for name, description in {
         "start": "welcome and quick intro", "help": "list all commands", "status": "runtime health", "signals": "last 10 signals",
         "today": "today's paper statistics", "open": "active paper signals", "pairs": "tracked pair status",
-        "strategies": "learn S1–S5", "vetoes": "learn G1–G15", "delta": "Delta conversion guide",
+        "strategies": "learn S1–S5", "vetoes": "learn active guards G1, G2, G4, G5, G6, G8, G9", "delta": "Delta conversion guide",
     }.items()]
     return _frame("📚 HELP", body, "ID: CMD-HELP")
 

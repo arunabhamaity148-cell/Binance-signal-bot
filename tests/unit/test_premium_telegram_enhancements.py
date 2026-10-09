@@ -60,7 +60,7 @@ def test_premium_startup_message_is_signal_only():
     msg = format_startup_message(symbols=["BTCUSDT"] * 20, delta_available=True)
     assert "ARUN ALPHA SIGNALS · ONLINE" in msg
     assert "no orders are placed" in msg
-    assert "Guards: G1–G15 active" in msg
+    assert "Active guards: G1, G2, G4, G5, G6, G8, G9" in msg
 
 
 def test_daily_report_has_premium_frame_and_legacy_metrics():

@@ -4,6 +4,7 @@ import aiosqlite
 import pytest
 
 from app.database.migrations import _MIGRATIONS, apply_migrations, get_current_version
+from app.database.repository import SignalRepository
 
 
 @pytest.mark.asyncio
@@ -65,3 +66,31 @@ async def test_existing_version_one_database_upgrades_to_three(tmp_path):
         assert await apply_migrations(conn, now_ms=3000) == 3
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_g16_veto_block_is_allowed_by_repository_and_sqlite_check(tmp_path):
+    repo = SignalRepository(tmp_path / "g16.db")
+    await repo.connect()
+    try:
+        await repo.record_veto_block(
+            guard_name="G16",
+            symbol="BTCUSDT",
+            strategy_source="S1",
+            event_ts_ms=1000,
+            message="multi-timeframe confluence block",
+        )
+        async with repo._conn.execute(
+            "SELECT guard_name FROM runtime_events WHERE event_type='VETO_BLOCK'"
+        ) as cursor:
+            assert await cursor.fetchone() == ("G16",)
+        with pytest.raises(ValueError, match="invalid guard_name"):
+            await repo.record_veto_block(
+                guard_name="G17",
+                symbol="BTCUSDT",
+                strategy_source="S1",
+                event_ts_ms=1001,
+                message="invalid guard",
+            )
+    finally:
+        await repo.close()

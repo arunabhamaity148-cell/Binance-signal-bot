@@ -110,7 +110,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
             message TEXT NOT NULL,
             CHECK (
                 (event_type = 'VETO_BLOCK' AND guard_name GLOB 'G[1-9]')
-                OR (event_type = 'VETO_BLOCK' AND guard_name IN ('G10','G11','G12','G13','G14','G15'))
+                OR (event_type = 'VETO_BLOCK' AND guard_name IN ('G10','G11','G12','G13','G14','G15','G16'))
                 OR (event_type = 'ERROR' AND severity IN ('ERROR','CRITICAL'))
             )
         );
