@@ -61,13 +61,21 @@ class S3FundingCrowding(StrategyBase):
     strategy_id = "S3"
 
     @staticmethod
-    def _skip(snapshot, reason: str):
-        diagnostic_strategy(snapshot.symbol, "S3", "rejected", reason)
+    def _skip(snapshot, reason: str, values: dict | None = None):
+        diagnostic_strategy(snapshot.symbol, "S3", "rejected", reason, values)
         logger.debug(
             "s3_eval_skip",
-            extra={"context": {"symbol": snapshot.symbol, "reason": reason}},
+            extra={"context": {"symbol": snapshot.symbol, "reason": reason, "values": values}},
         )
         return []
+
+    @staticmethod
+    def _prerequisite_rejected(snapshot, reason: str, values: dict | None = None) -> None:
+        diagnostic_strategy(snapshot.symbol, "S3", "rejected", reason, values)
+        logger.debug(
+            "s3_prerequisite_rejected",
+            extra={"context": {"symbol": snapshot.symbol, "reason": reason, "values": values}},
+        )
 
     def evaluate(
         self,
@@ -149,20 +157,20 @@ class S3FundingCrowding(StrategyBase):
         oi_history_1d = deriv.open_interest_history_1d
         oi_pct_window_days = cfg["oi_percentile_window_days"]
         if len(oi_history_1d) < oi_pct_window_days:
-            return self._skip(snapshot, "if len(oi_history_1d) < oi_pct_window_days:")
+            return self._skip(snapshot, "s3_prereq_other", {"branch": "oi_history_1d_insufficient"})
 
         try:
             atr14 = wilder_atr(bars_5m, period=atr_period)
         except InsufficientDataError:
-            return self._skip(snapshot, "except InsufficientDataError:")
+            return self._skip(snapshot, "s3_prereq_other", {"branch": "atr_insufficient"})
         if atr14 <= 0:
-            return self._skip(snapshot, "if atr14 <= 0:")
+            return self._skip(snapshot, "s3_prereq_other", {"branch": "atr_non_positive"})
 
         funding_values = [tv.value for tv in deriv.funding_rate_history[-funding_z_window:]]
         try:
             funding_z = zscore(funding_values[-1], funding_values)
         except InsufficientDataError:
-            return self._skip(snapshot, "except InsufficientDataError:")
+            return self._skip(snapshot, "s3_prereq_other", {"branch": "atr_insufficient"})
 
         oi_history_values = [tv.value for tv in oi_history_1d]
         oi_percentile = percentile_rank(latest_oi.value, oi_history_values)
@@ -176,14 +184,14 @@ class S3FundingCrowding(StrategyBase):
         price_disp_atr = abs(bars_5m[-1].close - bars_5m[-1 - n_displacement].close) / atr14
 
         if abs(funding_z) < cfg["min_abs_funding_z"]:
-            return self._skip(snapshot, "if abs(funding_z) < cfg['min_abs_funding_z']:")
+            return self._skip(snapshot, "s3_prereq_funding_z_below_min", {"funding_z": funding_z, "min_required": cfg["min_abs_funding_z"]})
         if oi_percentile < cfg["min_oi_pct_rank"]:
-            return self._skip(snapshot, "if oi_percentile < cfg['min_oi_pct_rank']:")
+            return self._skip(snapshot, "s3_prereq_oi_rank_below_min", {"oi_rank": oi_percentile, "min_required": cfg["min_oi_pct_rank"]})
         ls_extreme = ls_ratio_pct >= cfg["ls_ratio_pct_high"] or ls_ratio_pct <= cfg["ls_ratio_pct_low"]
         if not ls_extreme:
-            return self._skip(snapshot, "if not ls_extreme:")
+            return self._skip(snapshot, "s3_prereq_ls_ratio_not_extreme", {"ls_ratio_pct": ls_ratio_pct, "high": cfg["ls_ratio_pct_high"], "low": cfg["ls_ratio_pct_low"]})
         if price_disp_atr < cfg["min_price_disp_atr"]:
-            return self._skip(snapshot, "if price_disp_atr < cfg['min_price_disp_atr']:")
+            return self._skip(snapshot, "s3_prereq_price_disp_below_min", {"price_disp_atr": price_disp_atr, "min_required": cfg["min_price_disp_atr"]})
 
         # Crowd direction: positive funding + long-skewed ratio -> longs
         # crowded (watch for SHORT reversal). Negative funding +
@@ -191,14 +199,14 @@ class S3FundingCrowding(StrategyBase):
         longs_crowded = funding_z > 0 and ls_ratio_pct >= cfg["ls_ratio_pct_high"]
         shorts_crowded = funding_z < 0 and ls_ratio_pct <= cfg["ls_ratio_pct_low"]
         if not (longs_crowded or shorts_crowded):
-            return self._skip(snapshot, "if not (longs_crowded or shorts_crowded):")
+            return self._skip(snapshot, "s3_prereq_other", {"branch": "crowd_direction_mismatch"})
 
         if snapshot.taker_flow is None:
-            return self._skip(snapshot, "if snapshot.taker_flow is None:")
+            return self._skip(snapshot, "s3_prereq_other", {"branch": "taker_flow_missing"})
         try:
             taker_buy_ratio = snapshot.taker_flow.taker_buy_ratio
         except ValueError:
-            return self._skip(snapshot, "except ValueError:")
+            return self._skip(snapshot, "s3_prereq_other", {"branch": "taker_flow_invalid"})
 
         swing_lookback = 3  # shares S1/S4's default; not separately configured for S3 in CONFIG_SCHEMAS.md
         swing_count_needed = 1
