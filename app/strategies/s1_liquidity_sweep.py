@@ -202,6 +202,17 @@ class S1LiquiditySweep(StrategyBase):
             penetration_min_atr=cfg["penetration_min_atr"], volume_ratio=self._volume_ratio(snapshot.taker_flow),
         )
         logger.info("s1_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, **breakdown}})
+        if breakdown["final"] <= 0.0:
+            zero_factors = [
+                key for key, value in breakdown.items()
+                if isinstance(value, (int, float)) and value == 0.0
+            ]
+            logger.debug(
+                "s1_candidate_rejected | symbol=%s | direction=LONG | "
+                "reason=zero_confidence | zero_factors=%s",
+                snapshot.symbol, zero_factors,
+            )
+            return None
         meta = {
             "atr14": atr14,
             "snapshot_version": snapshot.snapshot_version,
@@ -284,6 +295,17 @@ class S1LiquiditySweep(StrategyBase):
             penetration_min_atr=cfg["penetration_min_atr"], volume_ratio=self._volume_ratio(snapshot.taker_flow),
         )
         logger.info("s1_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, **breakdown}})
+        if breakdown["final"] <= 0.0:
+            zero_factors = [
+                key for key, value in breakdown.items()
+                if isinstance(value, (int, float)) and value == 0.0
+            ]
+            logger.debug(
+                "s1_candidate_rejected | symbol=%s | direction=SHORT | "
+                "reason=zero_confidence | zero_factors=%s",
+                snapshot.symbol, zero_factors,
+            )
+            return None
         meta = {
             "atr14": atr14,
             "snapshot_version": snapshot.snapshot_version,
