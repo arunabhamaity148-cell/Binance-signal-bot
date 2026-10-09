@@ -19,6 +19,7 @@ forbidden_credentials:                  # class: E
 binance_base_url: "https://fapi.binance.com"        # class: A
 binance_ws_base_url: "wss://fstream.binance.com/stream"   # class: A
 binance_env: "mainnet"                 # class: E; opt-in "testnet" for pipeline verification only
+kline_backfill_limit_5m: 500             # class: A; ~41h, enough for 200-bar ATR percentile
 delta_enabled: true                      # class: E; public metadata only
 
 rate_limit_budget:

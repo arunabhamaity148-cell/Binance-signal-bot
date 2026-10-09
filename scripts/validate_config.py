@@ -100,6 +100,9 @@ def validate_system(data: dict[str, Any]) -> list[str]:
          "system.yaml: 'binance_env' must be 'mainnet' or 'testnet'")
     _err(errors, isinstance(data.get("delta_enabled"), bool),
          "system.yaml: 'delta_enabled' must be a boolean")
+    backfill_limit = data.get("kline_backfill_limit_5m")
+    _err(errors, isinstance(backfill_limit, int) and 214 <= backfill_limit <= 1500,
+         "system.yaml: kline_backfill_limit_5m must be an int in [214, 1500]")
 
     staleness = data.get("staleness_budget_ms", {})
     _err(errors, isinstance(staleness, dict), "system.yaml: 'staleness_budget_ms' must be a mapping")

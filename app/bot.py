@@ -122,7 +122,9 @@ class LiveSnapshotCache:
 
     async def _backfill_one(self,symbol):
         c=self.data[symbol]
-        calls=[self.rest.klines(symbol,tf,limit=max(100,int(self.cfg.strategy["common"]["min_candles"]))) for tf in _TIMEFRAMES]
+        base_limit=max(100,int(self.cfg.strategy["common"]["min_candles"]))
+        five_min_limit=int(self.cfg.system.get("kline_backfill_limit_5m", 500))
+        calls=[self.rest.klines(symbol,tf,limit=(five_min_limit if tf == "5m" else base_limit)) for tf in _TIMEFRAMES]
         calls += [self.rest.depth(symbol,limit=20),self.rest.book_ticker(symbol),self.rest.agg_trades(symbol,limit=500),
             self.rest.funding_rate(symbol,limit=100),*(self.rest.open_interest_hist(symbol,p,limit=30) for p in ("5m","15m","1h","1d")),
             self.rest.global_long_short_account_ratio(symbol,"5m",30),self.rest.taker_long_short_ratio(symbol,"5m",30),self.rest.open_interest(symbol)]
@@ -401,6 +403,25 @@ class SignalBot:
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock(); self._candidate_dedup=CandidateDeduplicator()
         self._cycle_candidates=0; self._cycle_signals=0
         self._boot_started_monotonic=time.monotonic(); self._snapshot_diagnostics={}
+        self._unknown_regime_since: dict[str, float] = {}
+        self._unknown_regime_error_logged: set[str] = set()
+
+    def _track_regime_status(self, symbol: str, regime: MarketRegime) -> float | None:
+        """Track continuous UNKNOWN duration and surface persistent failures."""
+        now = time.monotonic()
+        if regime != MarketRegime.UNKNOWN:
+            self._unknown_regime_since.pop(symbol, None)
+            self._unknown_regime_error_logged.discard(symbol)
+            return None
+        started = self._unknown_regime_since.setdefault(symbol, now)
+        duration_s = max(0.0, now - started)
+        if duration_s >= 600.0 and symbol not in self._unknown_regime_error_logged:
+            self._unknown_regime_error_logged.add(symbol)
+            logger.error(
+                "regime_unknown_persistent | duration_s=%s | action=investigate",
+                round(duration_s, 1), extra={"context": {"symbol": symbol, "duration_s": duration_s}}
+            )
+        return duration_s
 
     async def exchange_info(self):
         """Read public exchangeInfo and preserve per-symbol filter parse failures for boot reporting."""
@@ -723,6 +744,7 @@ class SignalBot:
         if isinstance(snapshot, MarketSnapshot):
             funding_z_for_context = self._funding_z_for_snapshot(snapshot)
             regime, regime_metrics = detect_regime(snapshot, funding_z_for_context)
+            self._track_regime_status(snapshot.symbol, regime)
             logger.info(
                 "regime_detected | symbol=%s | regime=%s | adx=%s | atr_pct=%s | oi_chg=%s | funding_z=%s",
                 snapshot.symbol, regime.value, regime_metrics.adx14, regime_metrics.atr_percentile,

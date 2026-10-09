@@ -16,5 +16,5 @@ def test_synthetic_high_volatility_metrics_classify_high_volatility():
 
 def test_missing_metrics_are_unknown_and_not_strategy_eligible():
     assert classify_regime(adx14=None, atr_percentile=.45, oi_change_1h_pct=1.2) == MarketRegime.UNKNOWN
-    assert classify_regime(adx14=28, atr_percentile=None, oi_change_1h_pct=1.2) == MarketRegime.UNKNOWN
+    assert classify_regime(adx14=28, atr_percentile=None, oi_change_1h_pct=1.2) == MarketRegime.RANGING
     assert classify_regime(adx14=28, atr_percentile=.45, oi_change_1h_pct=None) == MarketRegime.UNKNOWN

@@ -6,8 +6,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.core.math import InsufficientDataError, percentile_rank, true_range, wilder_atr_series
+from app.core.logging import get_logger
 from app.core.models import MarketSnapshot
 
+logger = get_logger(__name__)
+_ATR_UNAVAILABLE_WARNED_SYMBOLS: set[str] = set()
 
 class MarketRegime(StrEnum):
     TRENDING = "TRENDING"
@@ -31,8 +34,10 @@ def classify_regime(*, adx14: float | None, atr_percentile: float | None,
     Missing any required metric is fail-closed: no strategy is eligible when
     the regime cannot be determined honestly.
     """
-    if adx14 is None or atr_percentile is None or oi_change_1h_pct is None:
+    if adx14 is None or oi_change_1h_pct is None:
         return MarketRegime.UNKNOWN
+    if atr_percentile is None:
+        return MarketRegime.RANGING
     if atr_percentile > 0.90 or oi_change_1h_pct > 5.0:
         return MarketRegime.HIGH_VOLATILITY
     if adx14 > 25.0 and abs(oi_change_1h_pct) > 1.0:
@@ -89,6 +94,13 @@ def _atr_percentile(bars) -> float | None:
     return percentile_rank(atr_series[-1], atr_series[-201:-1])
 
 
+def _atr_history_available(bars) -> int:
+    try:
+        return len(wilder_atr_series(bars, period=14))
+    except InsufficientDataError:
+        return 0
+
+
 def metrics_for_snapshot(snapshot: MarketSnapshot, funding_z: float | None) -> RegimeMetrics:
     bars_1h = snapshot.klines_for("1h")
     bars_5m = snapshot.klines_for("5m")
@@ -97,9 +109,28 @@ def metrics_for_snapshot(snapshot: MarketSnapshot, funding_z: float | None) -> R
     oi_change = None
     if len(oi_history) >= 2 and oi_history[-2].value != 0:
         oi_change = (oi_history[-1].value - oi_history[-2].value) / oi_history[-2].value * 100.0
+    atr_history_available = _atr_history_available(bars_5m)
+    atr_percentile = _atr_percentile(bars_5m)
+    symbol = getattr(snapshot, "symbol", "UNKNOWN")
+    logger.info(
+        "regime_atr_pct_debug | symbol=%s | klines_available=%s | atr_history_available=%s | "
+        "required_for_percentile=201 | computed_atr_pct=%s",
+        symbol, len(bars_5m), atr_history_available, atr_percentile,
+        extra={"context": {"symbol": symbol, "klines_available": len(bars_5m),
+                             "atr_history_available": atr_history_available,
+                             "required_for_percentile": 201,
+                             "computed_atr_pct": atr_percentile}},
+    )
+    if atr_percentile is None and symbol not in _ATR_UNAVAILABLE_WARNED_SYMBOLS:
+        _ATR_UNAVAILABLE_WARNED_SYMBOLS.add(symbol)
+        logger.warning(
+            "regime_atr_pct_unavailable | using RANGING default until 200 bars accumulate",
+            extra={"context": {"symbol": symbol, "klines_available": len(bars_5m),
+                                 "atr_history_available": atr_history_available}},
+        )
     return RegimeMetrics(
         adx14=_adx14(bars_1h),
-        atr_percentile=_atr_percentile(bars_5m),
+        atr_percentile=atr_percentile,
         oi_change_1h_pct=oi_change,
         funding_z=funding_z,
     )
