@@ -16,6 +16,7 @@ from app.core.errors import MissingAssumedEquityError
 from app.core.logging import configure_logging, get_logger
 from app.data.binance.models import RawExchangeInfoSymbol
 from app.bot import SignalBot, SnapshotReadinessError
+from app.monitoring.diagnostics import configure as configure_diagnostics
 
 logger=get_logger(__name__)
 BOOT_SNAPSHOT_TIMEOUT_S=90.0  # class E: bounded first-snapshot wait
@@ -83,6 +84,7 @@ async def run_application(*,config_dir=None,dependencies:BootDependencies|None=N
     try:
         await announce("configuration_validation")
         cfg=deps.config_loader(config_dir)
+        configure_diagnostics(cfg.system.get("diagnostic_level"), enabled=cfg.system.get("diagnostic_mode", True))
         if cfg.system.get("binance_env", "mainnet") == "testnet":
             warning=("TESTNET MODE — market data is sparse and may not reflect real\n"
                      "liquidity. This is for pipeline verification only, NOT for signal\n"

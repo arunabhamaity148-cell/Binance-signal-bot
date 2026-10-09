@@ -18,6 +18,7 @@ silent pass (spec section 12).
 from __future__ import annotations
 
 from app.core.errors import GuardExecutionError
+from app.monitoring.diagnostics import level as diagnostic_level, veto as diagnostic_veto
 from app.core.models import (
     CandidateSignal,
     GuardAction,
@@ -66,51 +67,51 @@ def run_veto_engine(
 
     results.append(_safe_call("G1", veto.guard_g1_data_integrity, snapshot, news_state, candidate, veto_cfg["g1_data_integrity"]))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G2", veto.guard_g2_feed_health, snapshot, news_state, candidate, veto_cfg["g2_feed_health"]))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G10", veto.guard_g10_orderbook_instability, snapshot, news_state, candidate, veto_cfg["g10_orderbook_instability"]))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G3", veto.guard_g3_depth_collapse, snapshot, news_state, candidate, veto_cfg["g3_depth_collapse"], symbol_tier=symbol_tier))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G4", veto.guard_g4_spread_explosion, snapshot, news_state, candidate, veto_cfg["g4_spread_explosion"], symbol_tier=symbol_tier))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G5", veto.guard_g5_oi_anomaly, snapshot, news_state, candidate, veto_cfg["g5_oi_anomaly"]))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G13", veto.guard_g13_oi_divergence, snapshot, news_state, candidate, veto_cfg["g13_oi_divergence"]))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G14", veto.guard_g14_oi_stagnation, snapshot, news_state, candidate, veto_cfg["g14_oi_stagnation"]))
     # G14 is a DEGRADE guard, never a hard block; continue regardless.
 
     results.append(_safe_call("G15", veto.guard_g15_oi_percentile_extreme, snapshot, news_state, candidate, veto_cfg["g15_oi_percentile_extreme"]))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     g16_cfg = veto_cfg.get("g16_multi_tf_confluence", {})
     if g16_cfg.get("enabled", True):
         results.append(_safe_call("G16", guard_g16_multi_tf_confluence, snapshot, news_state, candidate, g16_cfg))
         if _is_hard_block(results[-1]):
-            return _finalize(results)
+            return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G6", veto.guard_g6_funding_extreme, snapshot, news_state, candidate, veto_cfg["g6_funding_extreme"], funding_z=funding_z))
     # DEGRADE only, continue.
 
     results.append(_safe_call("G7", veto.guard_g7_news_shock, snapshot, news_state, candidate, veto_cfg["g7_news_shock"]))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G8", veto.guard_g8_volatility_flash, snapshot, news_state, candidate, veto_cfg["g8_volatility_flash"]))
     # DEGRADE by default, continue.
@@ -123,22 +124,27 @@ def run_veto_engine(
         symbol_tier=symbol_tier, prior_results=results,
     ))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
     results.append(_safe_call("G12", veto.guard_g12_self_consistency, snapshot, news_state, candidate, veto_cfg["g12_self_consistency"]))
     if _is_hard_block(results[-1]):
-        return _finalize(results)
+        return _finalize(results, symbol=snapshot.symbol)
 
-    return _finalize(results)
+    return _finalize(results, symbol=snapshot.symbol)
 
 
 def _is_hard_block(result: GuardResult) -> bool:
     return not result.passed and result.action == GuardAction.BLOCK
 
 
-def _finalize(results: list[GuardResult]) -> VetoOutcome:
+def _finalize(results: list[GuardResult], *, symbol: str = "UNKNOWN") -> VetoOutcome:
+    if diagnostic_level() != "off":
+        for result in results:
+            if diagnostic_level() == "verbose":
+                diagnostic_veto(symbol, result.guard_name, "pass" if result.passed else result.action.value, result.reason, {"severity": result.severity.value, "degrade_max_grade": result.degrade_max_grade})
     blocking = [r for r in results if not r.passed and r.action == GuardAction.BLOCK]
     if blocking:
+        diagnostic_veto(symbol, "ENGINE", "BLOCK", "; ".join(r.guard_name for r in blocking), {"evaluated": len(results)})
         reason = "; ".join(f"{r.guard_name}: {r.reason}" for r in blocking)
         return VetoOutcome(
             veto_state=VetoState.BLOCK,
@@ -154,6 +160,7 @@ def _finalize(results: list[GuardResult]) -> VetoOutcome:
         grade_order = {"A+": 2, "A": 1, "B": 0}
         max_grade_cap = min((d.degrade_max_grade for d in degrades), key=lambda g: grade_order.get(g, 99))
 
+    diagnostic_veto(symbol, "ENGINE", "PASS", None, {"evaluated": len(results), "degraded": len(degrades)})
     return VetoOutcome(
         veto_state=VetoState.PASS,
         veto_reason=None,

@@ -1,3 +1,4 @@
+diagnostic_level: summary                # off | summary | verbose
 # veto.yaml
 # G1-G15 thresholds. Symbol-tier buckets (majors/mid_caps/small_caps)
 # referenced below are defined once in risk.yaml under symbol_tiers

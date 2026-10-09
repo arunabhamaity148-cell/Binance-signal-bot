@@ -7,6 +7,7 @@ structure. Missing higher-timeframe data fails closed for candidates.
 from __future__ import annotations
 
 from app.core.logging import get_logger
+from app.monitoring.diagnostics import is_verbose
 from app.core.math import InsufficientDataError, ema_series, has_hh_hl_sequence, has_lh_ll_sequence
 from app.core.models import CandidateSignal, Direction, GuardAction, GuardResult, GuardSeverity, MarketSnapshot, NewsState
 
@@ -56,7 +57,8 @@ def guard_g16_multi_tf_confluence(
         f"1h_ema_fast={fast:.6f} | 1h_ema_slow={slow:.6f} | 1h_trend={trend} | "
         f"4h_structure={structure} | passed={aligned}"
     )
-    logger.info(context)
+    if is_verbose():
+        logger.info(context)
     if aligned:
         return GuardResult("G16", True, GuardSeverity.HIGH, GuardAction.PASS)
     return GuardResult("G16", False, GuardSeverity.HIGH, GuardAction.BLOCK, context)
@@ -68,5 +70,6 @@ def _block(snapshot, candidate, fast, slow, reason: str) -> GuardResult:
         f"1h_ema_fast={fast} | 1h_ema_slow={slow} | 1h_trend=unknown | "
         f"4h_structure=unknown | passed=False | reason={reason}"
     )
-    logger.info(context)
+    if is_verbose():
+        logger.info(context)
     return GuardResult("G16", False, GuardSeverity.HIGH, GuardAction.BLOCK, reason)

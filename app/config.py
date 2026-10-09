@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 
 from app.core.errors import ConfigError
+from app.monitoring.diagnostics import configure as configure_diagnostics
 
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
@@ -99,14 +100,24 @@ def load_all(config_dir: Path | None = None) -> AppConfig:
     if missing:
         raise ConfigError(f"missing required config files: {missing}")
 
+    system = _load_yaml_file(directory / "system.yaml")
+    strategy = _load_yaml_file(directory / "strategy.yaml")
+    veto = _load_yaml_file(directory / "veto.yaml")
+    news_sources = _load_yaml_file(directory / "news_sources.yaml")
+    # Environment overrides are intentionally limited to diagnostics; they
+    # cannot change signal, risk, exchange, or trading configuration.
+    level = os.getenv("DIAGNOSTIC_LEVEL", system.get("diagnostic_level", "summary")).strip().lower()
+    if os.getenv("DIAGNOSTIC_MODE", "true").strip().lower() in {"0", "false", "no"}:
+        level = "off"
+    strategy.setdefault("common", {})["diagnostic_level"] = level
+    veto["diagnostic_level"] = level
+    news_sources["diagnostic_level"] = level
+    system["diagnostic_level"] = level
+    configure_diagnostics(level, enabled=system.get("diagnostic_mode", True))
     return AppConfig(
-        top20_pairs=_load_yaml_file(directory / "top20_pairs.yaml"),
-        system=_load_yaml_file(directory / "system.yaml"),
-        strategy=_load_yaml_file(directory / "strategy.yaml"),
-        veto=_load_yaml_file(directory / "veto.yaml"),
-        news_sources=_load_yaml_file(directory / "news_sources.yaml"),
-        risk=_load_yaml_file(directory / "risk.yaml"),
-        delta=_load_yaml_file(directory / "delta.yaml"),
+        top20_pairs=_load_yaml_file(directory / "top20_pairs.yaml"), system=system,
+        strategy=strategy, veto=veto, news_sources=news_sources,
+        risk=_load_yaml_file(directory / "risk.yaml"), delta=_load_yaml_file(directory / "delta.yaml"),
         config_dir=directory,
     )
 

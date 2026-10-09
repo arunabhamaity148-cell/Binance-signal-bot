@@ -35,6 +35,7 @@ crowded), a close above the most recent swing high.
 
 from __future__ import annotations
 
+from app.monitoring.diagnostics import strategy as diagnostic_strategy
 from app.core.math import (
     InsufficientDataError,
     percentile_rank,
@@ -61,6 +62,7 @@ class S3FundingCrowding(StrategyBase):
 
     @staticmethod
     def _skip(snapshot, reason: str):
+        diagnostic_strategy(snapshot.symbol, "S3", "rejected", reason)
         logger.debug(
             "s3_eval_skip",
             extra={"context": {"symbol": snapshot.symbol, "reason": reason}},
@@ -284,6 +286,7 @@ class S3FundingCrowding(StrategyBase):
         }
 
         logger.info("s3_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, "funding_z": funding_z, "oi_percentile": oi_percentile, "price_disp_atr": price_disp_atr, "final": min(1.0, 0.4 + 0.1 * abs(funding_z))}})
+        diagnostic_strategy(snapshot.symbol, "S3", "candidate", "triggered", {"confidence": min(1.0, 0.4 + 0.1 * abs(funding_z))})
         logger.debug("s3_candidate_created | symbol=%s | direction=%s | confidence=%s", snapshot.symbol, "SHORT", min(1.0, 0.4 + 0.1 * abs(funding_z)))
         return CandidateSignal(
             symbol=snapshot.symbol, direction=Direction.SHORT, strategy_source="S3",

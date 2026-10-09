@@ -30,6 +30,7 @@ from app.news.decay import is_active
 from app.news.deduper import DedupStore, dedupe_batch
 from app.news.impact import assess_impact
 from app.news.parser import ParsedNewsItem, parse_raw_item
+from app.monitoring.diagnostics import news as diagnostic_news
 
 
 @dataclass
@@ -166,10 +167,12 @@ async def run_collection_cycle(
         try:
             raw_items = await collector.fetch_source(source)
             parsed = [parse_raw_item(item, receipt_ts_ms=receipt_ts_ms) for item in raw_items]
-            engine.ingest_batch(parsed)
+            new_items = engine.ingest_batch(parsed)
+            diagnostic_news("NEWS", source.name, "success", "source_cycle", {"parsed": len(parsed), "new_items": len(new_items)})
             health = collector.health_for(source.name)
             engine.record_source_health(source.name, assess_source_health(health))
-        except NewsSourceUnavailableError:
+        except NewsSourceUnavailableError as exc:
+            diagnostic_news("NEWS", source.name, "failed", type(exc).__name__)
             health = collector.health_for(source.name)
             engine.record_source_health(source.name, assess_source_health(health))
             continue

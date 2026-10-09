@@ -3,6 +3,7 @@
 # (see KNOWN_UNCERTAINTIES.md item 1). Nothing here is calibrated.
 
 common:
+  diagnostic_level: summary              # off | summary | verbose
   atr_period: 14                        # class: B
   min_candles: 60                       # class: E
   min_stop_cost_multiple: 3.0           # class: E (engineering safety)

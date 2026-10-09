@@ -13,6 +13,7 @@ single entry price, which is also its own midpoint.
 
 from __future__ import annotations
 
+from app.monitoring.diagnostics import strategy as diagnostic_strategy
 from app.core.math import (
     InsufficientDataError,
     rolling_median,
@@ -40,6 +41,7 @@ class S2VolatilityCompression(StrategyBase):
 
     @staticmethod
     def _skip(snapshot, reason: str):
+        diagnostic_strategy(snapshot.symbol, "S2", "rejected", reason)
         logger.debug(
             "s2_eval_skip",
             extra={"context": {"symbol": snapshot.symbol, "reason": reason}},

@@ -25,6 +25,7 @@ value is duplicated from risk.yaml rather than imported at runtime.
 from __future__ import annotations
 
 from app.backtest.costs import compute_cost_breakdown, compute_rr_at_tp
+from app.monitoring.diagnostics import strategy as diagnostic_strategy
 from app.core.math import InsufficientDataError, percentile_rank, wilder_atr, zscore
 from app.core.models import (
     CandidateSignal,
@@ -45,6 +46,7 @@ class S5OiRegime(StrategyBase):
 
     @staticmethod
     def _skip(snapshot, reason: str):
+        diagnostic_strategy(snapshot.symbol, "S5", "rejected", reason)
         logger.debug(
             "s5_eval_skip",
             extra={"context": {"symbol": snapshot.symbol, "reason": reason}},

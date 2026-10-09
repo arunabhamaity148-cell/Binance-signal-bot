@@ -1,6 +1,9 @@
 # system.yaml
 
 mode: signal_only                       # class: E, fixed, not overridable
+# Log-only diagnostics. Environment DIAGNOSTIC_MODE/DIAGNOSTIC_LEVEL may override.
+diagnostic_mode: true
+diagnostic_level: summary                 # off | summary | verbose
 fail_closed: true                       # class: E, fixed
 
 forbidden_capabilities:                 # class: E

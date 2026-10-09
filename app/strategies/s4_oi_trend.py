@@ -9,6 +9,7 @@ both mandatory).
 
 from __future__ import annotations
 
+from app.monitoring.diagnostics import strategy as diagnostic_strategy
 from app.core.math import (
     InsufficientDataError,
     ema_series,
@@ -37,6 +38,7 @@ class S4OiTrend(StrategyBase):
 
     @staticmethod
     def _skip(snapshot, reason: str):
+        diagnostic_strategy(snapshot.symbol, "S4", "rejected", reason)
         logger.debug(
             "s4_eval_skip",
             extra={"context": {"symbol": snapshot.symbol, "reason": reason}},

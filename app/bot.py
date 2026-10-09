@@ -33,6 +33,7 @@ from app.news.engine import NewsEngine, run_collection_cycle
 from app.risk.risk_engine import (CandidateDeduplicator, DailyCounters, OpenSignalRecord, RiskState,
     apply_min_rr_gate, check_risk_limits, combined_sizing_multiplier, compute_position_size)
 from app.risk.veto_engine import run_veto_engine
+from app.monitoring.diagnostics import strategy as diagnostic_strategy
 from app.risk.btc_regime import compute_btc_trend_direction
 from app.risk.regime_detector import MarketRegime, detect_regime
 from app.signals.signal_engine import build_final_signal
@@ -787,6 +788,9 @@ class SignalBot:
             c, now_ts_ms=snapshot.as_of_ts_ms, cooldown_min=self.cfg.risk["cooldown_min"])]
         counts=Counter(c.strategy_source for c in candidates)
         log_symbol=getattr(snapshot,"symbol",None) or (candidates[0].symbol if candidates else "UNKNOWN")
+        for strategy_name in ("S1", "S2", "S3", "S4", "S5"):
+            diagnostic_strategy(log_symbol, strategy_name, "candidate" if counts.get(strategy_name, 0) else "none",
+                                "dispatcher_result", {"count": counts.get(strategy_name, 0)})
         logger.info("strategy_eval",extra={"context":{"symbol":log_symbol,
             **{f"s{i}_cand":counts.get(f"S{i}",0) for i in range(1,6)}}})
         self._cycle_candidates+=len(candidates)

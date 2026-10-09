@@ -1,3 +1,4 @@
+diagnostic_level: summary                # off | summary | verbose
 # news_sources.yaml
 # Free-cost only ($0/month hard requirement, spec section 14). All
 # URLs below are placeholders pending operator verification at

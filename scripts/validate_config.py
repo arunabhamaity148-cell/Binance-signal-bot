@@ -78,6 +78,8 @@ def validate_top20_pairs(data: dict[str, Any]) -> list[str]:
 
 def validate_system(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    _err(errors, isinstance(data.get("diagnostic_mode"), bool), "system.yaml: diagnostic_mode must be boolean")
+    _err(errors, data.get("diagnostic_level") in {"off", "summary", "verbose"}, "system.yaml: diagnostic_level must be off, summary, or verbose")
     _err(errors, data.get("mode") == "signal_only", "system.yaml: 'mode' must be 'signal_only'")
     _err(errors, data.get("fail_closed") is True, "system.yaml: 'fail_closed' must be true")
 
@@ -133,6 +135,7 @@ def validate_strategy(data: dict[str, Any]) -> list[str]:
     _err(errors, not missing, f"strategy.yaml: missing required sections: {missing}")
 
     common = data.get("common", {})
+    _err(errors, common.get("diagnostic_level") in {"off", "summary", "verbose"}, "strategy.yaml: common.diagnostic_level must be off, summary, or verbose")
     _err(errors, isinstance(common.get("atr_period"), int) and common.get("atr_period", 0) > 0,
          "strategy.yaml: common.atr_period must be a positive int")
     _err(errors, isinstance(common.get("min_candles"), int) and common.get("min_candles", 0) > 0,
@@ -173,6 +176,7 @@ def validate_strategy(data: dict[str, Any]) -> list[str]:
 
 def validate_veto(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    _err(errors, data.get("diagnostic_level", "summary") in {"off", "summary", "verbose"}, "veto.yaml: diagnostic_level must be off, summary, or verbose")
     required_guards = {f"g{i}_" for i in range(1, 17)}
     present_prefixes = {k.split("_")[0] + "_" for k in data.keys()}
     for prefix in required_guards:
@@ -180,6 +184,8 @@ def validate_veto(data: dict[str, Any]) -> list[str]:
              f"veto.yaml: missing guard section with prefix '{prefix}'")
 
     for guard_key, section in data.items():
+        if guard_key == "diagnostic_level":
+            continue
         if not isinstance(section, dict):
             errors.append(f"veto.yaml: guard section '{guard_key}' must be a mapping")
             continue
@@ -198,6 +204,7 @@ def validate_veto(data: dict[str, Any]) -> list[str]:
 
 def validate_news_sources(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    _err(errors, data.get("diagnostic_level", "summary") in {"off", "summary", "verbose"}, "news_sources.yaml: diagnostic_level must be off, summary, or verbose")
     for tier_key, tier_num in (("tier_1", 1), ("tier_2", 2), ("tier_3", 3)):
         sources = data.get(tier_key)
         _err(errors, isinstance(sources, list) and len(sources) > 0,
