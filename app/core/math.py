@@ -155,20 +155,21 @@ def rolling_median(values: list[float]) -> float:
 
 
 def percentile_rank(current: float, history: list[float]) -> float:
-    """Fraction of `history` strictly less than `current`, in [0, 1].
+    """Fraction of `history` less than or equal to `current`, in [0, 1].
 
     ``history`` should NOT include `current` itself unless the caller
     intends `current` to be compared against itself as well (i.e. pass
     the trailing window excluding the current bar for a
     look-ahead-free percentile).
+
+    The inclusive convention gives tied minimum values a positive rank and
+    still maps the maximum value in the comparison window to exactly 1.0.
     """
     if not history:
         raise InsufficientDataError("percentile_rank requires non-empty history")
     n = len(history)
-    count_less = sum(1 for h in history if h < current)
-    count_equal = sum(1 for h in history if h == current)
-    # Standard mid-rank percentile: ties share credit.
-    return (count_less + 0.5 * count_equal) / n
+    count_at_or_below = sum(1 for h in history if h <= current)
+    return count_at_or_below / n
 
 
 def rank_index(current: float, history_including_current: list[float]) -> int:

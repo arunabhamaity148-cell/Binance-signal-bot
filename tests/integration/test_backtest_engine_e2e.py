@@ -4,16 +4,9 @@ veto -> fill -> partial-exit tracking), with the realized R
 independently sanity-checked against the configured TP multiples and
 partial-exit fractions.
 
-This fixture needed a stronger S1 sweep penetration than the Batch 2.5
-"realistic" fixture (0.6 ATR vs 0.26 ATR) specifically so the
-candidate's confidence clears consensus's grade_b_min_conf = 0.55
-threshold -- a single-strategy confirmation sits close to that boundary
-by design (see KNOWN_UNCERTAINTIES.md item 11 on class-E/F gate
-rejection frequency); this is not a tuned-to-pass fixture, it documents
-honestly why the earlier, lower-penetration fixture produces zero
-trades when run through this engine (grade=None, not a bug) and uses a
-different, still-realistic penetration specifically to exercise the
-full engine path.
+The fixture uses both weak (0.26 ATR) and strong (0.6 ATR) S1 sweep
+penetrations to verify that the corrected confidence scale lets a
+qualifying weak setup reach grade B without changing the 0.55 threshold.
 """
 from __future__ import annotations
 
@@ -169,17 +162,14 @@ def test_engine_produces_no_trade_when_continuation_reverses_immediately(monkeyp
     assert -2.0 < trade.realized_r < -1.0  # raw stop loss plus modeled fees/slippage/latency
 
 
-def test_weak_sweep_penetration_correctly_produces_zero_trades_not_a_bug():
-    """Documents the honest finding: a candidate whose consensus
-    confidence does not clear grade_b_min_conf produces ZERO trades,
-    not an error. This is the same class-E/F gate-rejection pattern
-    recorded in KNOWN_UNCERTAINTIES.md item 11, now observed inside the
-    backtest engine itself, not just at the live-pipeline level."""
+def test_weak_sweep_penetration_reaches_grade_b_after_factor_rescale():
+    """A qualifying 0.26 ATR sweep is no longer discarded by bad scaling."""
     all_5m, trigger_index, ob, tf, deriv = _build_fixture(
         penetration_atr_mult=0.26, continuation_step=80.0, continuation_bars=40,
     )
     results = _run(all_5m, ob, tf, deriv)
-    assert results == []
+    assert len(results) == 1
+    assert results[0].strategy_source == "S1"
 
 
 def test_engine_with_no_auxiliary_data_produces_zero_trades_fail_closed():

@@ -295,23 +295,20 @@ def test_s3_hard_rule_funding_extreme_alone_never_signals():
     already passed).
 
     S3 percentile-ranks the LIVE 5m OI point (open_interest_history_5m[-1])
-    against the 1d history series -- so to make that percentile
-    genuinely mid-range (not extreme), the 1d history must be centered
-    ON the live point's value, not on some other arbitrary value. An
-    earlier version of this fixture flattened the 1d history to a
-    value below the live point, which left the live point at the top
-    of the (now-degenerate) distribution -- percentile 1.0, still
-    'extreme' -- causing this test to fail for a fixture-construction
-    reason, not a production-code reason. Fixed by centering the
-    flattened history on the actual live OI value.
+    against the 1d history series. The inclusive percentile convention
+    makes a tied maximum rank 1.0, so this fixture uses a varied history
+    centered around the live point to keep the OI percentile mid-range.
     """
     bars_5m = _bleed_5m_bars()
     bars_15m, _ = _swing_low_15m_bars()
     as_of = max(bars_5m[-1].close_time_ms, bars_15m[-1].close_time_ms) + 1000
     deriv = _derivatives_longs_crowded(as_of)
     live_oi_value = deriv.open_interest_history_5m[-1].value
-    flat_oi_1d = [replace(tv, value=live_oi_value) for tv in deriv.open_interest_history_1d]
-    deriv = replace(deriv, open_interest_history_1d=flat_oi_1d)
+    centered_oi_1d = [
+        replace(tv, value=live_oi_value + (i - 14) * 5_000)
+        for i, tv in enumerate(deriv.open_interest_history_1d)
+    ]
+    deriv = replace(deriv, open_interest_history_1d=centered_oi_1d)
     snap = _snapshot(bars_5m, bars_15m, deriv, (2, 10), as_of)
     result = S3FundingCrowding().evaluate(snap, _empty_news(as_of), CFG)
     assert result == [], "funding extreme alone (without OI/ratio/displacement/structure/taker) must not signal"

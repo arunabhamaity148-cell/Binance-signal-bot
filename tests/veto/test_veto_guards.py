@@ -254,7 +254,17 @@ def test_g7_passes_with_low_severity_news():
 # --- G8 ---
 
 def test_g8_passes_on_normal_bar():
-    snapshot = _base_snapshot()
+    bars = [
+        OHLC(open=100.0, high=100.0 + (1.0 + ((i * 37) % 41) / 100.0),
+             low=100.0 - (1.0 + ((i * 37) % 41) / 100.0), close=100.0,
+             volume=100, close_time_ms=i * 300_000)
+        for i in range(250)
+    ]
+    # Mild, non-flash variation makes the current ATR percentile meaningful
+    # under the inclusive convention rather than a tied maximum.
+    snapshot = _base_snapshot(
+        klines={"5m": SymbolKlines(symbol="BTCUSDT", timeframe="5m", bars=bars)},
+    )
     result = veto.guard_g8_volatility_flash(snapshot, _empty_news(), None, VETO_CFG["g8_volatility_flash"])
     assert result.passed
 

@@ -31,20 +31,32 @@ class S1LiquiditySweep(StrategyBase):
                               reclaim_distance: float, reclaim_band_atr: float,
                               penetration_min_atr: float, volume_ratio: float) -> dict[str, float]:
         """Convert independent S1 setup quality signals into confidence."""
+        def threshold_factor(actual: float, threshold: float) -> float:
+            """Map threshold -> 0.5 and 2x threshold -> 1.0, fail closed."""
+            if threshold <= 0 or actual < threshold:
+                return 0.0
+            # A threshold is the minimum qualifying evidence, so it earns
+            # half credit; doubling it earns full credit without letting any
+            # single factor dominate the bounded confidence score.
+            return 0.5 + 0.5 * min(1.0, max(0.0, (actual - threshold) / threshold))
+
         if direction == Direction.LONG:
-            taker_factor = (taker_buy_ratio - 0.55) / 0.45
+            taker_strength = taker_buy_ratio - 0.50
         else:
-            taker_factor = (0.45 - taker_buy_ratio) / 0.45
-        taker_factor = max(0.0, min(1.0, taker_factor))
-        reclaim_factor = max(0.0, min(1.0, 1.0 - reclaim_distance / max(reclaim_band_atr, 1e-9)))
-        sweep_factor = max(0.0, min(1.0, (sweep_distance - penetration_min_atr) / max(1.0 - penetration_min_atr, 1e-9)))
-        volume_factor = max(0.0, min(1.0, (volume_ratio - 0.5) / 1.5))
+            taker_strength = 0.50 - taker_buy_ratio
+        taker_factor = threshold_factor(taker_strength, 0.05)
+        reclaim_quality = 1.0 - reclaim_distance / max(reclaim_band_atr, 1e-9)
+        reclaim_factor = threshold_factor(reclaim_quality, 0.5)
+        sweep_factor = threshold_factor(sweep_distance, penetration_min_atr)
+        volume_factor = threshold_factor(volume_ratio - 0.5, 0.5)
         quality = (0.35 * taker_factor + 0.30 * reclaim_factor +
                    0.25 * sweep_factor + 0.10 * volume_factor)
-        # Keep a qualifying setup near its configured base even when one
-        # quality dimension is merely moderate; the grade threshold remains
-        # in consensus.yaml and is intentionally unchanged.
-        final = max(0.0, min(1.0, base_confidence * (0.77 + 0.23 * quality)))
+        if min(taker_factor, reclaim_factor, sweep_factor, volume_factor) == 0.0:
+            final = 0.0
+        else:
+            # Keep base confidence as the floor and add a bounded quality
+            # increment; the independent grade-B threshold remains 0.55.
+            final = max(0.0, min(1.0, base_confidence + 0.10 * quality))
         return {"base": base_confidence, "taker_flow_factor": taker_factor,
                 "reclaim_quality_factor": reclaim_factor, "sweep_distance_factor": sweep_factor,
                 "volume_factor": volume_factor, "final": final}

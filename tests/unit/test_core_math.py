@@ -104,8 +104,8 @@ def test_percentile_rank_basic():
 
 def test_percentile_rank_ties():
     history = [1.0, 2.0, 2.0, 3.0]
-    # 1 value less than 2, 2 values equal to 2 -> (1 + 0.5*2)/4 = 0.5
-    assert percentile_rank(2.0, history) == 0.5
+    # Inclusive convention: 1 value below 2 plus 2 tied values -> 3/4.
+    assert percentile_rank(2.0, history) == 0.75
 
 
 def test_rank_index_highest_is_rank_1():
