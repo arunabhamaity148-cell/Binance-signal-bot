@@ -37,22 +37,23 @@ def normalize_kline_series(symbol: str, timeframe: str, raw_klines: list[RawKlin
     or on OHLC violations (surfaced via OHLC's own validation).
     """
     closed = [r for r in raw_klines if r.is_closed]
-    closed_sorted = sorted(closed, key=lambda r: r.close_time_ms)
-
-    seen_close_times: set[int] = set()
+    seen_by_close_time: dict[int, RawKline] = {}
     bars: list[OHLC] = []
     prev_close_time: int | None = None
-    for raw in closed_sorted:
-        if raw.close_time_ms in seen_close_times:
-            # Idempotent retransmit of an identical bar is fine; a
-            # differing payload for the same close_time is not.
+    for raw in closed:
+        previous = seen_by_close_time.get(raw.close_time_ms)
+        if previous is not None:
+            if previous != raw:
+                raise DataIntegrityError(
+                    f"{symbol} {timeframe}: conflicting duplicate kline close_time {raw.close_time_ms}"
+                )
             continue
         if prev_close_time is not None and raw.close_time_ms <= prev_close_time:
             raise DataIntegrityError(
-                f"{symbol} {timeframe}: out-of-order kline close_time "
+                f"{symbol} {timeframe}: out-of-order or duplicate kline close_time "
                 f"{raw.close_time_ms} <= previous {prev_close_time}"
             )
-        seen_close_times.add(raw.close_time_ms)
+        seen_by_close_time[raw.close_time_ms] = raw
         prev_close_time = raw.close_time_ms
         bars.append(kline_to_ohlc(raw))
 
@@ -68,17 +69,27 @@ def merge_kline_series(existing: SymbolKlines, new_raw: list[RawKline]) -> Symbo
     # merge at the OHLC level directly for existing bars and validate
     # the new ones against the tail.
     existing_close_times = {b.close_time_ms for b in existing.bars}
-    new_closed = [r for r in new_raw if r.is_closed and r.close_time_ms not in existing_close_times]
-    new_closed_sorted = sorted(new_closed, key=lambda r: r.close_time_ms)
+    new_closed = [r for r in new_raw if r.is_closed]
 
     prev_close_time = existing.bars[-1].close_time_ms if existing.bars else None
     new_bars: list[OHLC] = []
-    for raw in new_closed_sorted:
+    seen_new: dict[int, RawKline] = {}
+    for raw in new_closed:
+        if raw.close_time_ms in existing_close_times:
+            continue
+        previous = seen_new.get(raw.close_time_ms)
+        if previous is not None:
+            if previous != raw:
+                raise DataIntegrityError(
+                    f"{existing.symbol} {existing.timeframe}: conflicting duplicate merge close_time {raw.close_time_ms}"
+                )
+            continue
         if prev_close_time is not None and raw.close_time_ms <= prev_close_time:
             raise DataIntegrityError(
                 f"{existing.symbol} {existing.timeframe}: out-of-order merge, "
                 f"close_time {raw.close_time_ms} <= previous {prev_close_time}"
             )
+        seen_new[raw.close_time_ms] = raw
         prev_close_time = raw.close_time_ms
         new_bars.append(kline_to_ohlc(raw))
 

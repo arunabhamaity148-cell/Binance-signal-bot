@@ -50,7 +50,10 @@ from app.core.models import (
     NewsState,
 )
 from app.core.time_utils import is_stale
+from app.core.logging import get_logger
 from app.strategies.base import StrategyBase
+
+logger = get_logger(__name__)
 
 
 class S3FundingCrowding(StrategyBase):
@@ -178,8 +181,11 @@ class S3FundingCrowding(StrategyBase):
             )
             if candidate is not None:
                 self._assert_never_funding_alone(
-                    funding_extreme=True, oi_extreme=True, price_disp_extreme=True,
-                    structure_break=True, taker_flip=True,
+                    funding_extreme=abs(funding_z) >= cfg["min_abs_funding_z"],
+                    oi_extreme=oi_percentile >= cfg["min_oi_pct_rank"],
+                    price_disp_extreme=price_disp_atr >= cfg["min_price_disp_atr"],
+                    structure_break=bool(candidate.meta.get("structure_break")),
+                    taker_flip=bool(candidate.meta.get("taker_flip")),
                 )
                 candidates.append(candidate)
 
@@ -191,8 +197,11 @@ class S3FundingCrowding(StrategyBase):
             )
             if candidate is not None:
                 self._assert_never_funding_alone(
-                    funding_extreme=True, oi_extreme=True, price_disp_extreme=True,
-                    structure_break=True, taker_flip=True,
+                    funding_extreme=abs(funding_z) >= cfg["min_abs_funding_z"],
+                    oi_extreme=oi_percentile >= cfg["min_oi_pct_rank"],
+                    price_disp_extreme=price_disp_atr >= cfg["min_price_disp_atr"],
+                    structure_break=bool(candidate.meta.get("structure_break")),
+                    taker_flip=bool(candidate.meta.get("taker_flip")),
                 )
                 candidates.append(candidate)
 
@@ -262,8 +271,11 @@ class S3FundingCrowding(StrategyBase):
             "min_oi_pct_rank": cfg["min_oi_pct_rank"],
             "min_price_disp_atr": cfg["min_price_disp_atr"],
             "sl_buffer_atr": sl_buffer_atr,
+            "structure_break": structure_break,
+            "taker_flip": taker_flip,
         }
 
+        logger.info("s3_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, "funding_z": funding_z, "oi_percentile": oi_percentile, "price_disp_atr": price_disp_atr, "final": min(1.0, 0.4 + 0.1 * abs(funding_z))}})
         return CandidateSignal(
             symbol=snapshot.symbol, direction=Direction.SHORT, strategy_source="S3",
             confidence=min(1.0, 0.4 + 0.1 * abs(funding_z)),
@@ -319,8 +331,11 @@ class S3FundingCrowding(StrategyBase):
             "min_oi_pct_rank": cfg["min_oi_pct_rank"],
             "min_price_disp_atr": cfg["min_price_disp_atr"],
             "sl_buffer_atr": sl_buffer_atr,
+            "structure_break": structure_break,
+            "taker_flip": taker_flip,
         }
 
+        logger.info("s3_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, "funding_z": funding_z, "oi_percentile": oi_percentile, "price_disp_atr": price_disp_atr, "final": min(1.0, 0.4 + 0.1 * abs(funding_z))}})
         return CandidateSignal(
             symbol=snapshot.symbol, direction=Direction.LONG, strategy_source="S3",
             confidence=min(1.0, 0.4 + 0.1 * abs(funding_z)),

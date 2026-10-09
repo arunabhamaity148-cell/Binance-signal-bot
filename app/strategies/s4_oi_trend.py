@@ -25,8 +25,11 @@ from app.core.models import (
     NewsState,
 )
 from app.core.time_utils import is_stale
+from app.core.logging import get_logger
 from app.data.derivatives import oi_series_for_window
 from app.strategies.base import StrategyBase
+
+logger = get_logger(__name__)
 
 
 class S4OiTrend(StrategyBase):
@@ -215,7 +218,7 @@ class S4OiTrend(StrategyBase):
 
         why_lines = (
             f"S4 {direction.value} trend: EMA{cfg['ema_fast_period']}/"
-            f"{cfg['ema_slow_period']} aligned, slope {ema_slope_fast:.3f} ATR/bar",
+            f"{cfg['ema_slow_period']} aligned, slope {ema_slope_fast:.3f} ATR over {cfg['ema_slope_lookback']} bars",
             f"HTF (4H) trend confirms direction; 15m structure confirms "
             f"{'HH/HL' if direction == Direction.LONG else 'LH/LL'}",
             f"OI expansion {oi_delta_pct:.2f}% confirms continuation "
@@ -235,11 +238,17 @@ class S4OiTrend(StrategyBase):
             "pullback_tolerance_atr": cfg["pullback_tolerance_atr"],
         }
 
+        confidence = min(1.0, 0.5 + abs(ema_slope_fast) * 0.1)
+        logger.info("s4_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol,
+            "ema_slope_atr": ema_slope_fast, "oi_delta_pct": oi_delta_pct,
+            "final": confidence}})
+        meta["confidence_breakdown"] = {"ema_slope_atr": ema_slope_fast,
+                                         "oi_delta_pct": oi_delta_pct, "final": confidence}
         return CandidateSignal(
             symbol=snapshot.symbol,
             direction=direction,
             strategy_source="S4",
-            confidence=min(1.0, 0.5 + abs(ema_slope_fast) * 0.1),
+            confidence=confidence,
             channels=(ChannelName.PRICE_STRUCTURE, ChannelName.OI),
             entry_low=min(entry_mid, entry_mid),
             entry_high=max(entry_mid, entry_mid),

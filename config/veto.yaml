@@ -88,6 +88,7 @@ g13_oi_divergence:
   exempt_strategies: [S3, S5]
 
 g14_oi_stagnation:
+  window_bars: 12                       # class: F
   oi_noise_band: 0.005                  # class: E
   strong_move_atr_mult: 1.5             # class: F
   severity: MEDIUM

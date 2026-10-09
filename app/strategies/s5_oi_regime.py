@@ -34,7 +34,10 @@ from app.core.models import (
     NewsState,
 )
 from app.core.time_utils import is_stale
+from app.core.logging import get_logger
 from app.strategies.base import StrategyBase
+
+logger = get_logger(__name__)
 
 
 class S5OiRegime(StrategyBase):
@@ -266,9 +269,16 @@ class S5OiRegime(StrategyBase):
             "regime_high_threshold": cfg["regime_high_threshold"],
         }
 
+        confidence = min(1.0, 0.5 + abs(oi_delta_5m) * 5)
+        logger.info("s5_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol,
+            "oi_delta_5m": oi_delta_5m, "taker_buy_ratio": taker_buy_ratio,
+            "funding_veto_z": funding_z_value, "final": confidence}})
+        meta["confidence_breakdown"] = {"oi_delta_5m": oi_delta_5m,
+                                         "taker_buy_ratio": taker_buy_ratio,
+                                         "funding_veto_z": funding_z_value, "final": confidence}
         return CandidateSignal(
             symbol=snapshot.symbol, direction=direction, strategy_source="S5",
-            confidence=min(1.0, 0.5 + abs(oi_delta_5m) * 5),
+            confidence=confidence,
             channels=(ChannelName.OI, ChannelName.TAKER_FLOW),
             entry_low=entry, entry_high=entry, stop_loss=stop_loss,
             tp1=tp1, tp2=tp2, tp3=tp3, tp4=tp4,

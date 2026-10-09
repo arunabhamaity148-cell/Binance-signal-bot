@@ -28,8 +28,11 @@ from app.core.models import (
     NewsState,
 )
 from app.core.time_utils import is_stale
+from app.core.logging import get_logger
 from app.data.derivatives import oi_series_for_window
 from app.strategies.base import StrategyBase
+
+logger = get_logger(__name__)
 
 
 class S2VolatilityCompression(StrategyBase):
@@ -181,6 +184,8 @@ class S2VolatilityCompression(StrategyBase):
             f"Volume confirm ratio {volume_confirm_ratio:.2f} > {cfg['volume_confirm_ratio']}, "
             f"OI delta {oi_delta_pct:.2f}% >= {cfg['min_oi_chg_pct']}%",
         )
+        confidence = min(1.0, 0.5 + 0.1 * volume_confirm_ratio)
+        logger.info("s2_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, "volume_confirm_ratio": volume_confirm_ratio, "oi_delta_pct": oi_delta_pct, "final": confidence}})
         meta = {
             "atr14": atr14,
             "snapshot_version": snapshot.snapshot_version,
@@ -202,7 +207,7 @@ class S2VolatilityCompression(StrategyBase):
             symbol=snapshot.symbol,
             direction=Direction.LONG,
             strategy_source="S2",
-            confidence=min(1.0, 0.5 + 0.1 * volume_confirm_ratio),
+            confidence=confidence,
             channels=(ChannelName.VOLATILITY, ChannelName.OI),
             entry_low=entry,
             entry_high=entry,
@@ -251,6 +256,8 @@ class S2VolatilityCompression(StrategyBase):
             f"Volume confirm ratio {volume_confirm_ratio:.2f} > {cfg['volume_confirm_ratio']}, "
             f"OI delta {oi_delta_pct:.2f}% >= {cfg['min_oi_chg_pct']}%",
         )
+        confidence = min(1.0, 0.5 + 0.1 * volume_confirm_ratio)
+        logger.info("s2_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, "volume_confirm_ratio": volume_confirm_ratio, "oi_delta_pct": oi_delta_pct, "final": confidence}})
         meta = {
             "atr14": atr14,
             "snapshot_version": snapshot.snapshot_version,
@@ -272,7 +279,7 @@ class S2VolatilityCompression(StrategyBase):
             symbol=snapshot.symbol,
             direction=Direction.SHORT,
             strategy_source="S2",
-            confidence=min(1.0, 0.5 + 0.1 * volume_confirm_ratio),
+            confidence=confidence,
             channels=(ChannelName.VOLATILITY, ChannelName.OI),
             entry_low=entry,
             entry_high=entry,

@@ -268,7 +268,7 @@ def guard_g8_volatility_flash(snapshot: MarketSnapshot, news: NewsState, candida
             "A",
         )
 
-    if len(atr_series) >= 200:
+    if len(atr_series) >= 201:
         history = atr_series[-201:-1]
         pct = percentile_rank(atr14, history)
         if pct > cfg["atr_percentile_extreme"]:
@@ -479,7 +479,7 @@ def guard_g14_oi_stagnation(
         return _pass("G14", GuardSeverity.MEDIUM)
 
     bars = snapshot.klines_for("5m")
-    window = 12
+    window = int(cfg.get("window_bars", 12))
     oi_series = snapshot.derivatives.open_interest_history_5m
     if len(bars) <= window or len(oi_series) <= window:
         return _pass("G14", GuardSeverity.MEDIUM)
@@ -504,7 +504,7 @@ def guard_g14_oi_stagnation(
     if oi_pct < cfg["oi_noise_band"] and price_move_atr > cfg["strong_move_atr_mult"]:
         return _degrade(
             "G14", GuardSeverity.MEDIUM,
-            f"flat OI ({oi_pct:.2%}) with strong price move ({price_move_atr:.2f} ATR)",
+            f"G14 OI stagnation: flat OI ({oi_pct:.2%}) with strong price move ({price_move_atr:.2f} ATR)",
             cfg["degrade_max_grade"],
         )
     return _pass("G14", GuardSeverity.MEDIUM)
@@ -539,5 +539,5 @@ def guard_g15_oi_percentile_extreme(
     pct = percentile_rank(current_oi, history_values)
 
     if pct > cfg["high_threshold"] or pct < cfg["low_threshold"]:
-        return _block("G15", GuardSeverity.HIGH, f"OI percentile {pct:.2f} at extreme for trend-continuation strategy")
+        return _block("G15", GuardSeverity.HIGH, f"G15 OI percentile extreme: {pct:.2f} for trend-continuation strategy")
     return _pass("G15", GuardSeverity.HIGH)

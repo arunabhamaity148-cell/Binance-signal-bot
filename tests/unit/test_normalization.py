@@ -26,10 +26,10 @@ def _raw_kline(close_time_ms: int, close: float = 100.0, is_closed: bool = True)
     )
 
 
-def test_normalize_kline_series_orders_correctly():
+def test_normalize_kline_series_rejects_out_of_order_input():
     raws = [_raw_kline(600_000), _raw_kline(300_000), _raw_kline(900_000)]
-    sk = normalize_kline_series("BTCUSDT", "5m", raws)
-    assert [b.close_time_ms for b in sk.bars] == [300_000, 600_000, 900_000]
+    with pytest.raises(DataIntegrityError):
+        normalize_kline_series("BTCUSDT", "5m", raws)
 
 
 def test_normalize_kline_series_drops_unclosed():
@@ -45,18 +45,10 @@ def test_normalize_kline_series_deduplicates_identical_close_time():
 
 
 def test_normalize_kline_series_rejects_conflicting_duplicate():
-    """Same close_time but the SECOND occurrence has different content
-    at the same slot would be silently dropped under idempotent-dedup
-    rules per G1's edge case (only true out-of-order or genuinely later
-    distinct timestamps trigger an error; identical-timestamp retransmits
-    are treated as idempotent). This test documents that dedup keeps
-    the FIRST-seen bar for a given close_time rather than raising,
-    which matches the G1 edge case: 'a single duplicate message with
-    identical payload is deduplicated silently.'"""
+    """A conflicting retransmit must fail closed rather than be dropped."""
     raws = [_raw_kline(300_000, close=100.0), _raw_kline(300_000, close=999.0)]
-    sk = normalize_kline_series("BTCUSDT", "5m", raws)
-    assert len(sk.bars) == 1
-    assert sk.bars[0].close == 100.0
+    with pytest.raises(DataIntegrityError):
+        normalize_kline_series("BTCUSDT", "5m", raws)
 
 
 def test_merge_kline_series_appends_new_bars():

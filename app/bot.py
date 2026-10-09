@@ -14,6 +14,7 @@ from app.config import AppConfig
 from app.core.errors import SnapshotIncompleteError
 from app.core.logging import get_logger
 from app.core.models import Direction, GuardAction, NewsState, TakerFlowState, TimestampedValue
+from app.core.math import zscore, InsufficientDataError
 from app.core.time_utils import now_ms, utc_date_str
 from app.data.binance.models import (RawAggTrade, RawBookTicker, RawDepthSnapshot, RawExchangeInfoSymbol,
     RawKline, RawLongShortRatio, RawOpenInterest)
@@ -32,6 +33,7 @@ from app.news.engine import NewsEngine, run_collection_cycle
 from app.risk.risk_engine import (CandidateDeduplicator, DailyCounters, OpenSignalRecord, RiskState,
     apply_min_rr_gate, check_risk_limits, compute_position_size)
 from app.risk.veto_engine import run_veto_engine
+from app.risk.btc_regime import compute_btc_trend_direction
 from app.signals.signal_engine import build_final_signal
 from app.telegram.formatter import DeliveryContext
 from app.telegram.queue import TelegramQueue, build_telegram_limits
@@ -95,8 +97,12 @@ class LiveSnapshotCache:
                 ("aggTrade","depth20@100ms","bookTicker","markPrice@1s",*(f"kline_{tf}" for tf in _TIMEFRAMES))]
 
     async def start(self,symbols):
+        g2 = self.cfg.veto["g2_feed_health"]
         self.ws=self.ws_factory(WebSocketClientConfig(
-            self.cfg.system["binance_ws_base_url"], binance_env=self.cfg.system["binance_env"]
+            self.cfg.system["binance_ws_base_url"],
+            binance_env=self.cfg.system["binance_env"],
+            max_reconnects_per_window=int(g2["max_reconnects_per_window"]),
+            reconnect_window_s=float(g2.get("reconnect_window_min", 5)) * 60.0,
         ),self._streams(symbols))
         self.ws_task=asyncio.create_task(self._consume(),name="binance-public-websocket")
 
@@ -361,7 +367,11 @@ class LiveSnapshotCache:
     def get_snapshot(self,symbol):
         if not self.is_snapshot_ready(symbol): raise SnapshotIncompleteError(f"{symbol}: first full snapshot is not ready")
         c=self.data[symbol]; pair=self.cfg.pair_config(symbol); stamp=now_ms()
-        ob=depth_and_ticker_to_orderbook_state(c["depth"],c["ticker"],depth_check_levels=5,received_ts_ms=stamp)
+        ob=depth_and_ticker_to_orderbook_state(
+            c["depth"], c["ticker"],
+            depth_check_levels=int(self.cfg.veto["g3_depth_collapse"].get("depth_check_levels", 5)),
+            received_ts_ms=stamp,
+        )
         flows=_flow_from_trades(symbol,c["trades"],c["klines"]["5m"].bars,stamp) if c["trades"] else None
         feeds={stream:self.ws.feed_health(stream,stamp) for stream in self._streams([symbol])}
         inputs=SnapshotInputs(symbol,stamp,c["klines"],ob,flows,c["derivatives"],feeds,pair["price_tick"],pair["qty_step"],pair["min_qty"],pair["fee_maker_bps"],pair["fee_taker_bps"],c["oi"],self.cfg.system["staleness_budget_ms"]["oi_ms"])
@@ -683,7 +693,29 @@ class SignalBot:
     def _log_consensus_diagnostic(event, context):
         logger.info(event,extra={"context":context})
 
+    def _funding_z_for_snapshot(self, snapshot):
+        derivatives = getattr(snapshot, "derivatives", None)
+        history = getattr(derivatives, "funding_rate_history", None) if derivatives else None
+        window = int(self.cfg.strategy["s3_funding_crowding"]["funding_z_window"])
+        if not history or len(history) < window:
+            return None
+        try:
+            values = [point.value for point in history[-window:]]
+            return zscore(values[-1], values)
+        except InsufficientDataError:
+            return None
+
+    def _btc_trend_for_veto(self):
+        if self.cache is None or "BTCUSDT" not in self.cache.data:
+            return None
+        try:
+            return compute_btc_trend_direction(self.cache.get_snapshot("BTCUSDT"), self.cfg.strategy["s4_oi_trend"])
+        except Exception as exc:
+            logger.warning("btc_regime_context_unavailable", extra={"context": {"error_type": type(exc).__name__}})
+            return None
+
     async def evaluate_symbol(self,snapshot,news_state):
+        btc_trend_direction = self._btc_trend_for_veto()
         try:
             candidates=generate_candidates_at_snapshot(snapshot,news_state,self.cfg.strategy)
         except Exception as exc:
@@ -714,7 +746,8 @@ class SignalBot:
                 continue
             candidate=group[0]
             veto=run_veto_engine(snapshot=snapshot,news_state=news_state,candidate=candidate,veto_cfg=self.cfg.veto,
-                symbol_tier=self.cfg.symbol_tier(symbol),funding_z=None,btc_trend_direction=None)
+                symbol_tier=self.cfg.symbol_tier(symbol),funding_z=self._funding_z_for_snapshot(snapshot),
+                btc_trend_direction=btc_trend_direction)
             if veto.veto_state.value!="PASS":
                 reason=veto.veto_reason or "; ".join(r.reason or r.guard_name for r in veto.guard_results
                     if not r.passed and r.action==GuardAction.BLOCK) or "veto_blocked"
