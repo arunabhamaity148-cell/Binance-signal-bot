@@ -177,16 +177,21 @@ class RiskState:
 class CandidateDeduplicator:
     """Suppress repeated equivalent candidates before audit/grade work."""
 
+    # Only effectively identical confidence values are duplicates. A wider
+    # tolerance can hide a materially changed market setup from operators.
+    CONFIDENCE_TOLERANCE = 1e-6
+
     last_seen: dict[tuple[str, str, str], tuple[int, float]] = field(default_factory=dict)
 
     def should_suppress(self, candidate: CandidateSignal, *, now_ts_ms: int, cooldown_min: float) -> bool:
         key = (candidate.symbol, candidate.strategy_source, candidate.direction.value)
         previous = self.last_seen.get(key)
         last_ts = previous[0] if previous is not None else None
+        age_ms = None if previous is None else now_ts_ms - previous[0]
         duplicate = bool(
             previous is not None
-            and 0 <= now_ts_ms - previous[0] < int(cooldown_min * 60_000)
-            and abs(candidate.confidence - previous[1]) <= 0.001
+            and 0 <= age_ms < int(cooldown_min * 60_000)
+            and abs(candidate.confidence - previous[1]) <= self.CONFIDENCE_TOLERANCE
         )
         logger.debug(
             "candidate_dedup_check | symbol=%s | direction=%s | strategy=%s | "
@@ -196,6 +201,19 @@ class CandidateDeduplicator:
         )
         if not duplicate:
             self.last_seen[key] = (now_ts_ms, candidate.confidence)
+        else:
+            logger.info(
+                "candidate_suppressed_dedup",
+                extra={"context": {
+                    "symbol": candidate.symbol,
+                    "strategy": candidate.strategy_source,
+                    "direction": candidate.direction.value,
+                    "new_conf": candidate.confidence,
+                    "last_conf": previous[1],
+                    "age_min": age_ms / 60_000,
+                    "duplicate": True,
+                }},
+            )
         return duplicate
 
 

@@ -47,7 +47,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from app.core.logging import get_logger
 from app.core.models import CandidateSignal, MarketSnapshot, NewsState
+
+logger = get_logger(__name__)
 
 REQUIRED_META_KEYS = ("atr14", "snapshot_version", "event_ts_ms")
 
@@ -143,8 +146,29 @@ class StrategyBase(ABC):
         """
         stop_cost_multiple = config["common"]["min_stop_cost_multiple"]
         width_multiple = config["common"]["max_entry_zone_width_r_multiple"]
-        out = [c for c in candidates if passes_min_stop_cost_multiple(c, snapshot, stop_cost_multiple)]
-        out = [c for c in out if passes_max_entry_zone_width(c, width_multiple)]
+        out: list[CandidateSignal] = []
+        for candidate in candidates:
+            if not passes_min_stop_cost_multiple(candidate, snapshot, stop_cost_multiple):
+                logger.info(
+                    "candidate_filtered_finalize",
+                    extra={"context": {
+                        "symbol": candidate.symbol, "strategy": candidate.strategy_source,
+                        "direction": candidate.direction.value, "confidence": candidate.confidence,
+                        "reason": "min_stop_cost_multiple",
+                    }},
+                )
+                continue
+            if not passes_max_entry_zone_width(candidate, width_multiple):
+                logger.info(
+                    "candidate_filtered_finalize",
+                    extra={"context": {
+                        "symbol": candidate.symbol, "strategy": candidate.strategy_source,
+                        "direction": candidate.direction.value, "confidence": candidate.confidence,
+                        "reason": "max_entry_zone_width",
+                    }},
+                )
+                continue
+            out.append(candidate)
         return out
 
     @abstractmethod

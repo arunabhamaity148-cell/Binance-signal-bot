@@ -771,7 +771,19 @@ class SignalBot:
                 "s1_cand":0,"s2_cand":0,"s3_cand":0,"s4_cand":0,"s5_cand":0,
                 "evaluation_error":f"{type(exc).__name__}: {exc}"}})
             raise
-        candidates=[c for c in candidates if not self._candidate_dedup.should_suppress(
+        pending_candidates = candidates
+        for candidate in pending_candidates:
+            if candidate.strategy_source == "S1":
+                logger.info(
+                    "s1_candidate_pending",
+                    extra={"context": {
+                        "symbol": candidate.symbol,
+                        "direction": candidate.direction.value,
+                        "confidence": candidate.confidence,
+                        "ts_ms": int(snapshot.as_of_ts_ms),
+                    }},
+                )
+        candidates=[c for c in pending_candidates if not self._candidate_dedup.should_suppress(
             c, now_ts_ms=snapshot.as_of_ts_ms, cooldown_min=self.cfg.risk["cooldown_min"])]
         counts=Counter(c.strategy_source for c in candidates)
         log_symbol=getattr(snapshot,"symbol",None) or (candidates[0].symbol if candidates else "UNKNOWN")
@@ -782,6 +794,14 @@ class SignalBot:
             await self.repo.insert_candidate_audit(symbol=c.symbol,strategy_source=c.strategy_source,direction=c.direction.value,
                 confidence=c.confidence,event_ts_ms=c.event_ts_ms,snapshot_version=snapshot.snapshot_version,meta=c.meta)
             self._log_candidate(c,grade="UNASSESSED",veto="NOT_RUN",reason="created",stage="created")
+            logger.info(
+                "candidate_created",
+                extra={"context": {
+                    "symbol": c.symbol, "strategy": c.strategy_source,
+                    "direction": c.direction.value, "confidence": c.confidence,
+                    "stage": "created",
+                }},
+            )
         grade_kwargs={}
         if "diagnostic_logger" in inspect.signature(grade_candidates).parameters:
             grade_kwargs["diagnostic_logger"]=self._log_consensus_diagnostic
