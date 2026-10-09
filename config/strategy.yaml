@@ -18,6 +18,7 @@ common:
   # zone is too wide for the R:R claim to be meaningful.
 
 s1_liquidity_sweep:
+  base_confidence: 0.62                 # class: F
   swing_lookback: 3                     # class: F
   penetration_min_atr: 0.25             # class: F
   reclaim_band_atr: 0.15                # class: F

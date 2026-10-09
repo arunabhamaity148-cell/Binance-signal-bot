@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from app.core.errors import RiskLimitExceededError
 from app.core.math import round_down_to_step
 from app.core.models import CandidateSignal, Direction, MarketSnapshot
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,32 @@ class RiskState:
     open_signals: list[OpenSignalRecord] = field(default_factory=list)
     daily: DailyCounters | None = None
     cooldown_until_ts_ms: dict[str, int] = field(default_factory=dict)  # symbol -> ts_ms
+
+
+@dataclass
+class CandidateDeduplicator:
+    """Suppress repeated equivalent candidates before audit/grade work."""
+
+    last_seen: dict[tuple[str, str, str], tuple[int, float]] = field(default_factory=dict)
+
+    def should_suppress(self, candidate: CandidateSignal, *, now_ts_ms: int, cooldown_min: float) -> bool:
+        key = (candidate.symbol, candidate.strategy_source, candidate.direction.value)
+        previous = self.last_seen.get(key)
+        last_ts = previous[0] if previous is not None else None
+        duplicate = bool(
+            previous is not None
+            and 0 <= now_ts_ms - previous[0] < int(cooldown_min * 60_000)
+            and abs(candidate.confidence - previous[1]) <= 0.001
+        )
+        logger.debug(
+            "candidate_dedup_check | symbol=%s | direction=%s | strategy=%s | "
+            "last_signal_ts=%s | cooldown_min=%s | duplicate=%s",
+            candidate.symbol, candidate.direction.value, candidate.strategy_source,
+            last_ts, cooldown_min, duplicate,
+        )
+        if not duplicate:
+            self.last_seen[key] = (now_ts_ms, candidate.confidence)
+        return duplicate
 
 
 def check_risk_limits(

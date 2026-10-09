@@ -29,8 +29,8 @@ from app.exchanges.delta_converter import resolve_delta_symbol, to_delta_fields
 from app.exchanges.delta_products import DeltaProductsClient
 from app.news.collectors import NewsCollector, build_retry_config, build_source_configs
 from app.news.engine import NewsEngine, run_collection_cycle
-from app.risk.risk_engine import (DailyCounters, OpenSignalRecord, RiskState, apply_min_rr_gate,
-    check_risk_limits, compute_position_size)
+from app.risk.risk_engine import (CandidateDeduplicator, DailyCounters, OpenSignalRecord, RiskState,
+    apply_min_rr_gate, check_risk_limits, compute_position_size)
 from app.risk.veto_engine import run_veto_engine
 from app.signals.signal_engine import build_final_signal
 from app.telegram.formatter import DeliveryContext
@@ -386,7 +386,7 @@ class SignalBot:
         self.error_notifier=None; self.report_task=None; self.hourly_summary_task=None; self.command_task=None
         self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
         self.delta_client=None; self.delta_products={}; self.delta_task=None
-        self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock()
+        self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock(); self._candidate_dedup=CandidateDeduplicator()
         self._cycle_candidates=0; self._cycle_signals=0
         self._boot_started_monotonic=time.monotonic(); self._snapshot_diagnostics={}
 
@@ -690,6 +690,8 @@ class SignalBot:
                 "s1_cand":0,"s2_cand":0,"s3_cand":0,"s4_cand":0,"s5_cand":0,
                 "evaluation_error":f"{type(exc).__name__}: {exc}"}})
             raise
+        candidates=[c for c in candidates if not self._candidate_dedup.should_suppress(
+            c, now_ts_ms=snapshot.as_of_ts_ms, cooldown_min=self.cfg.risk["cooldown_min"])]
         counts=Counter(c.strategy_source for c in candidates)
         log_symbol=getattr(snapshot,"symbol",None) or (candidates[0].symbol if candidates else "UNKNOWN")
         logger.info("strategy_eval",extra={"context":{"symbol":log_symbol,

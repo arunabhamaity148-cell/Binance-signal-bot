@@ -8,6 +8,7 @@ exactly, including every fail-closed condition.
 from __future__ import annotations
 
 from app.core.math import InsufficientDataError, wilder_atr
+from app.core.logging import get_logger
 from app.core.models import (
     CandidateSignal,
     ChannelName,
@@ -18,9 +19,40 @@ from app.core.models import (
 from app.core.time_utils import is_stale
 from app.strategies.base import StrategyBase
 
+logger = get_logger(__name__)
+
 
 class S1LiquiditySweep(StrategyBase):
     strategy_id = "S1"
+
+    @staticmethod
+    def _confidence_breakdown(*, direction: Direction, base_confidence: float,
+                              taker_buy_ratio: float, sweep_distance: float,
+                              reclaim_distance: float, reclaim_band_atr: float,
+                              penetration_min_atr: float, volume_ratio: float) -> dict[str, float]:
+        """Convert independent S1 setup quality signals into confidence."""
+        if direction == Direction.LONG:
+            taker_factor = (taker_buy_ratio - 0.55) / 0.45
+        else:
+            taker_factor = (0.45 - taker_buy_ratio) / 0.45
+        taker_factor = max(0.0, min(1.0, taker_factor))
+        reclaim_factor = max(0.0, min(1.0, 1.0 - reclaim_distance / max(reclaim_band_atr, 1e-9)))
+        sweep_factor = max(0.0, min(1.0, (sweep_distance - penetration_min_atr) / max(1.0 - penetration_min_atr, 1e-9)))
+        volume_factor = max(0.0, min(1.0, (volume_ratio - 0.5) / 1.5))
+        quality = (0.35 * taker_factor + 0.30 * reclaim_factor +
+                   0.25 * sweep_factor + 0.10 * volume_factor)
+        # Keep a qualifying setup near its configured base even when one
+        # quality dimension is merely moderate; the grade threshold remains
+        # in consensus.yaml and is intentionally unchanged.
+        final = max(0.0, min(1.0, base_confidence * (0.77 + 0.23 * quality)))
+        return {"base": base_confidence, "taker_flow_factor": taker_factor,
+                "reclaim_quality_factor": reclaim_factor, "sweep_distance_factor": sweep_factor,
+                "volume_factor": volume_factor, "final": final}
+
+    @staticmethod
+    def _volume_ratio(taker_flow) -> float:
+        values = [float(value) for value in taker_flow.total_volume_last_bars if float(value) > 0]
+        return values[-1] / (sum(values) / len(values)) if values else 0.5
 
     def evaluate(
         self,
@@ -151,6 +183,13 @@ class S1LiquiditySweep(StrategyBase):
             f"{cfg['taker_buy_min_long']} threshold",
         )
 
+        breakdown = self._confidence_breakdown(
+            direction=Direction.LONG, base_confidence=cfg.get("base_confidence", 0.62),
+            taker_buy_ratio=taker_buy_ratio, sweep_distance=sweep_dist_long,
+            reclaim_distance=(l_high - current.close) / atr14, reclaim_band_atr=reclaim_band_atr,
+            penetration_min_atr=cfg["penetration_min_atr"], volume_ratio=self._volume_ratio(snapshot.taker_flow),
+        )
+        logger.info("s1_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, **breakdown}})
         meta = {
             "atr14": atr14,
             "snapshot_version": snapshot.snapshot_version,
@@ -162,14 +201,14 @@ class S1LiquiditySweep(StrategyBase):
             "reclaim_band_atr": reclaim_band_atr,
             "entry_offset_atr": entry_offset_atr,
             "sl_buffer_atr": sl_buffer_atr,
-            "taker_buy_min_long": cfg["taker_buy_min_long"],
+            "taker_buy_min_long": cfg["taker_buy_min_long"], "confidence_breakdown": breakdown,
         }
 
         return CandidateSignal(
             symbol=snapshot.symbol,
             direction=Direction.LONG,
             strategy_source="S1",
-            confidence=min(1.0, 0.5 + 0.1 * sweep_dist_long),
+            confidence=breakdown["final"],
             channels=(ChannelName.LIQUIDITY, ChannelName.TAKER_FLOW),
             entry_low=entry_low,
             entry_high=entry_high,
@@ -226,6 +265,13 @@ class S1LiquiditySweep(StrategyBase):
             f"{cfg['taker_sell_max_short']} threshold",
         )
 
+        breakdown = self._confidence_breakdown(
+            direction=Direction.SHORT, base_confidence=cfg.get("base_confidence", 0.62),
+            taker_buy_ratio=taker_buy_ratio, sweep_distance=sweep_dist_short,
+            reclaim_distance=(current.close - l_low) / atr14, reclaim_band_atr=reclaim_band_atr,
+            penetration_min_atr=cfg["penetration_min_atr"], volume_ratio=self._volume_ratio(snapshot.taker_flow),
+        )
+        logger.info("s1_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, **breakdown}})
         meta = {
             "atr14": atr14,
             "snapshot_version": snapshot.snapshot_version,
@@ -237,14 +283,14 @@ class S1LiquiditySweep(StrategyBase):
             "reclaim_band_atr": reclaim_band_atr,
             "entry_offset_atr": entry_offset_atr,
             "sl_buffer_atr": sl_buffer_atr,
-            "taker_sell_max_short": cfg["taker_sell_max_short"],
+            "taker_sell_max_short": cfg["taker_sell_max_short"], "confidence_breakdown": breakdown,
         }
 
         return CandidateSignal(
             symbol=snapshot.symbol,
             direction=Direction.SHORT,
             strategy_source="S1",
-            confidence=min(1.0, 0.5 + 0.1 * sweep_dist_short),
+            confidence=breakdown["final"],
             channels=(ChannelName.LIQUIDITY, ChannelName.TAKER_FLOW),
             entry_low=entry_low,
             entry_high=entry_high,
