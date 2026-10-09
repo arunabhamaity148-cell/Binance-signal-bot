@@ -252,22 +252,25 @@ class LiveSnapshotCache:
         return bool(symbols) and not stale
 
     def _apply_message(self,stream,payload):
+        stream=str(stream); normalized_stream=stream.lower()
         symbol=stream.split("@",1)[0].upper(); c=self.data.get(symbol)
         if c is None: return
         received=now_ms()
-        if "@kline_" in stream:
-            tf=stream.split("@kline_",1)[1]; old=c["klines"].get(tf)
+        if "@kline_" in normalized_stream:
+            tf=normalized_stream.split("@kline_",1)[1]; old=c["klines"].get(tf)
             raw=RawKline.from_ws_payload(payload)
             if old is not None: c["klines"][tf]=merge_kline_series(old,[raw])
-        elif stream.endswith("@depth20@100ms"): c["depth"]=RawDepthSnapshot.from_ws_payload(payload,symbol)
-        elif stream.endswith("@bookTicker"): c["ticker"]=RawBookTicker.from_ws_payload(payload)
-        elif stream.endswith("@aggTrade"): c["trades"].append(RawAggTrade.from_ws_payload(payload))
-        elif stream.endswith("@markPrice") and c["derivatives"] is not None:
+        elif normalized_stream.endswith("@depth20@100ms"): c["depth"]=RawDepthSnapshot.from_ws_payload(payload,symbol)
+        elif normalized_stream.endswith("@bookticker"): c["ticker"]=RawBookTicker.from_ws_payload(payload)
+        elif normalized_stream.endswith("@aggtrade"): c["trades"].append(RawAggTrade.from_ws_payload(payload))
+        elif normalized_stream.endswith("@markprice") and c["derivatives"] is not None:
             d=c["derivatives"]; value=TimestampedValue(float(payload["p"]),int(payload.get("E",received)),received)
             c["derivatives"]=type(d)(d.symbol,d.funding_rate_history,d.open_interest_history_5m,d.open_interest_history_15m,
                 d.open_interest_history_1h,d.open_interest_history_1d,d.long_short_account_ratio_history,
                 d.taker_long_short_ratio_history,value)
-        c.setdefault("received",{})[stream]=received
+        received_map=c.setdefault("received",{})
+        received_map[stream]=received
+        received_map[normalized_stream]=received
 
     def is_snapshot_ready(self,symbol):
         c=self.data.get(symbol)
@@ -289,12 +292,14 @@ class LiveSnapshotCache:
         lower=symbol.lower()
         five=c.get("klines",{}).get("5m")
         bars=getattr(five,"bars",()) if five is not None else ()
-        kline_stamp=getattr(bars[-1],"close_time_ms",None) if bars else None
+        kline_stamp=received.get(f"{lower}@kline_5m")
+        if kline_stamp is None:
+            kline_stamp=getattr(bars[-1],"close_time_ms",None) if bars else None
         depth,ticker=c.get("depth"),c.get("ticker")
         depth_stamp=received.get(f"{lower}@depth20@100ms") or getattr(depth,"event_time_ms",None)
-        ticker_stamp=received.get(f"{lower}@bookTicker") or getattr(ticker,"event_time_ms",None)
+        ticker_stamp=received.get(f"{lower}@bookticker") or getattr(ticker,"event_time_ms",None)
         trades=c.get("trades") or ()
-        trade_stamp=received.get(f"{lower}@aggTrade")
+        trade_stamp=received.get(f"{lower}@aggtrade")
         if trade_stamp is None and trades:
             trade_stamp=max((getattr(row,"trade_time_ms",0) for row in trades),default=0)
         oi=c.get("oi")

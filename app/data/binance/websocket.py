@@ -94,6 +94,8 @@ class BinanceWebSocketClient:
             raise ValueError(f"disallowed WebSocket streams requested: {invalid}")
         self._config = config
         self._streams = streams
+        self._stream_aliases = {stream.lower(): stream for stream in streams}
+        self._message_counts: dict[str, int] = {stream: 0 for stream in streams}
         self._reconnect_tracker = _ReconnectTracker(window_s=config.reconnect_window_s)
         self._last_message_ts_ms: dict[str, int] = {}
         self._connected = False
@@ -122,6 +124,43 @@ class BinanceWebSocketClient:
     def last_message_ts_ms(self) -> int | None:
         """Wall-clock timestamp of the most recently received WS message."""
         return max(self._last_message_ts_ms.values(), default=None)
+
+    @property
+    def message_counts(self) -> dict[str, int]:
+        return dict(self._message_counts)
+
+    async def _monitor_stream_health(self, ws, *, interval_s: float = 60.0, silent_s: float = 60.0) -> None:
+        previous = dict(self._message_counts)
+        while True:
+            await asyncio.sleep(interval_s)
+            now_ms = int(time.time() * 1000)
+            silent_streams = []
+            for configured_stream in self._streams:
+                count = self._message_counts.get(configured_stream, 0)
+                delta = count - previous.get(configured_stream, 0)
+                previous[configured_stream] = count
+                last = self._last_message_ts_ms.get(configured_stream)
+                age = None if last is None else max(0, now_ms - last)
+                logger.info("ws_stream_health", extra={"context": {
+                    "stream": configured_stream,
+                    "msgs_last_60s": delta,
+                    "last_msg_age_ms": age,
+                }})
+                if delta == 0 and (age is None or age >= int(silent_s * 1000)):
+                    logger.warning("ws_stream_silent", extra={"context": {
+                        "stream": configured_stream,
+                        "symbol": configured_stream.split("@", 1)[0].upper(),
+                        "silent_s": int(silent_s),
+                        "reconnect_triggered": False,
+                    }})
+                    silent_streams.append(configured_stream)
+            if silent_streams:
+                logger.warning("ws_stream_reconnect_triggered", extra={"context": {
+                    "silent_streams": silent_streams,
+                    "reconnect_triggered": True,
+                }})
+                await ws.close(code=4000, reason=f"silent streams: {','.join(silent_streams[:3])}")
+                return
 
     def _log_no_rehydrate(self) -> None:
         symbols=sorted({stream.split("@",1)[0].upper() for stream in self._streams})
@@ -174,19 +213,32 @@ class BinanceWebSocketClient:
                     self._last_connected_monotonic=connected_at
                     attempt = 0
                     logger.info("websocket connected", extra={"context": {"streams": self._streams}})
-                    async for raw in ws:
-                        try:
-                            envelope = json.loads(raw)
-                        except json.JSONDecodeError:
-                            logger.warning("dropped malformed WS message (non-JSON)")
-                            continue
-                        stream = envelope.get("stream")
-                        payload = envelope.get("data")
-                        if stream is None or payload is None:
-                            logger.warning("dropped WS envelope missing stream/data", extra={"context": {"envelope": envelope}})
-                            continue
-                        self._last_message_ts_ms[stream] = int(time.time() * 1000)
-                        yield stream, payload
+                    health_task = asyncio.create_task(self._monitor_stream_health(ws), name="binance-ws-stream-health")
+                    try:
+                        async for raw in ws:
+                            try:
+                                envelope = json.loads(raw)
+                            except json.JSONDecodeError:
+                                logger.warning("dropped malformed WS message (non-JSON)")
+                                continue
+                            stream = envelope.get("stream")
+                            payload = envelope.get("data")
+                            if stream is None or payload is None:
+                                logger.warning("dropped WS envelope missing stream/data", extra={"context": {"envelope": envelope}})
+                                continue
+                            configured_stream = self._stream_aliases.get(str(stream).lower(), str(stream))
+                            received_ts_ms = int(time.time() * 1000)
+                            self._last_message_ts_ms[configured_stream] = received_ts_ms
+                            self._message_counts[configured_stream] = self._message_counts.get(configured_stream, 0) + 1
+                            logger.debug("ws_msg_received", extra={"context": {
+                                "stream": configured_stream,
+                                "symbol": configured_stream.split("@", 1)[0].upper(),
+                                "count": self._message_counts[configured_stream],
+                            }})
+                            yield configured_stream, payload
+                    finally:
+                        health_task.cancel()
+                        await asyncio.gather(health_task, return_exceptions=True)
             except (ConnectionClosed, OSError) as exc:
                 self._connected = False
                 attempt += 1
