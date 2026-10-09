@@ -188,6 +188,13 @@ class S4OiTrend(StrategyBase):
                 if candidate is not None:
                     candidates.append(candidate)
 
+        if not candidates:
+            diagnostic_strategy(snapshot.symbol, "S4", "rejected", "no_valid_trend_setup", {
+                "long_trend": long_trend, "short_trend": short_trend,
+                "oi_delta_pct": oi_delta_pct,
+            })
+        else:
+            diagnostic_strategy(snapshot.symbol, "S4", "candidate", "trend_setup_valid", {"count": len(candidates)})
         return self.finalize_candidates(candidates, snapshot, config)
 
     def _check_pullback(

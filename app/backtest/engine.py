@@ -48,6 +48,7 @@ from app.data.snapshot import SnapshotInputs, build_snapshot
 from app.risk.consensus import assign_grade, compute_effective_votes
 from app.risk.veto_engine import run_veto_engine
 from app.strategies.registry import all_strategies
+from app.monitoring.diagnostics import strategy as diagnostic_strategy
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,7 @@ def generate_candidates_at_snapshot(
         allowed = section.get("allowed_regimes")
         regime_name = getattr(regime, "value", regime)
         if regime_name is not None and regime_name not in (allowed or ()):
+            diagnostic_strategy(getattr(snapshot, "symbol", "UNKNOWN"), strategy.strategy_id, "skipped", "regime_not_allowed", {"regime": regime_name})
             if regime_logger is not None:
                 regime_logger(strategy.strategy_id, regime_name)
             continue

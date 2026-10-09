@@ -17,6 +17,7 @@ from app.core.models import (
     NewsState,
 )
 from app.core.time_utils import is_stale
+from app.monitoring.diagnostics import strategy as diagnostic_strategy
 from app.strategies.base import StrategyBase
 
 logger = get_logger(__name__)
@@ -81,42 +82,46 @@ class S1LiquiditySweep(StrategyBase):
         atr_period = common["atr_period"]
         min_candles = common["min_candles"]
 
+        def reject(reason: str) -> list[CandidateSignal]:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", reason)
+            return []
+
         bars_5m = snapshot.klines_for("5m")
         if len(bars_5m) < min_candles:
-            return []  # fail-closed: insufficient history
+            return reject("insufficient_history")
 
         try:
             atr14 = wilder_atr(bars_5m, period=atr_period)
         except InsufficientDataError:
-            return []  # fail-closed: ATR unavailable
+            return reject("atr_unavailable")
 
         if atr14 <= 0:
-            return []  # degenerate ATR, cannot compute sweep distances safely
+            return reject("degenerate_atr")
 
         # Taker-flow freshness and availability check.
         if snapshot.taker_flow is None:
-            return []  # fail-closed: taker flow required
+            return reject("taker_flow_unavailable")
         if is_stale(
             event_ts_ms=snapshot.taker_flow.event_ts_ms,
             received_ts_ms=snapshot.taker_flow.received_ts_ms,
             as_of_ts_ms=snapshot.as_of_ts_ms,
             staleness_budget_ms=cfg["taker_stale_ms"],
         ):
-            return []  # fail-closed: taker flow stale
+            return reject("taker_flow_stale")
 
         try:
             taker_buy_ratio = snapshot.taker_flow.taker_buy_ratio
         except ValueError:
-            return []  # fail-closed: no volume to compute ratio
+            return reject("taker_flow_volume_unavailable")
 
         swing_lookback = cfg["swing_lookback"]
         if len(bars_5m) < swing_lookback + 2:
-            return []
+            return reject("insufficient_history")
 
         i = len(bars_5m) - 1  # index of most recently closed bar
         window = bars_5m[i - swing_lookback : i]  # bars i-1 .. i-swing_lookback
         if not window:
-            return []
+            return reject("insufficient_history")
 
         l_high = max(b.high for b in window)
         l_low = min(b.low for b in window)
@@ -152,6 +157,10 @@ class S1LiquiditySweep(StrategyBase):
         if short_candidate is not None:
             candidates.append(short_candidate)
 
+        if candidates:
+            diagnostic_strategy(snapshot.symbol, "S1", "candidate", "sweep_setup_valid", {"count": len(candidates)})
+        else:
+            diagnostic_strategy(snapshot.symbol, "S1", "none", "no_valid_sweep_setup")
         return self.finalize_candidates(candidates, snapshot, config)
 
     def _evaluate_long(
@@ -159,16 +168,21 @@ class S1LiquiditySweep(StrategyBase):
     ) -> CandidateSignal | None:
         sweep_dist_long = (current.high - l_high) / atr14
         if sweep_dist_long < cfg["penetration_min_atr"]:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "long_sweep_below_threshold")
             return None
         if not (current.high > l_high):
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "long_sweep_not_above_level")
             return None
         if not (current.close < l_high):
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "long_reclaim_not_below_level")
             return None
         reclaim_band_atr = cfg["reclaim_band_atr"]
         if not (current.close >= l_high - reclaim_band_atr * atr14):
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "long_reclaim_outside_band")
             return None
 
         if taker_buy_ratio < cfg["taker_buy_min_long"]:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "long_taker_flow_below_threshold")
             return None
 
         entry_offset_atr = cfg["entry_offset_atr"]
@@ -180,6 +194,7 @@ class S1LiquiditySweep(StrategyBase):
         stop_loss = min(current.low, prev.low) - sl_buffer_atr * atr14
 
         if stop_loss >= entry_low:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "long_stop_geometry_invalid")
             return None  # degenerate geometry, refuse to emit
 
         # R is measured from the entry-zone MIDPOINT, not entry_low/high
@@ -218,6 +233,7 @@ class S1LiquiditySweep(StrategyBase):
             reclaim_threshold, reclaim_raw, reclaim_factor,
         )
         if breakdown["final"] <= 0.0:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "zero_confidence_factor")
             zero_factors = [
                 key for key, value in breakdown.items()
                 if isinstance(value, (int, float)) and value == 0.0
@@ -242,6 +258,7 @@ class S1LiquiditySweep(StrategyBase):
             "taker_buy_min_long": cfg["taker_buy_min_long"], "confidence_breakdown": breakdown,
         }
 
+        diagnostic_strategy(snapshot.symbol, "S1", "candidate", "long_sweep_setup_valid", {"confidence": breakdown["final"]})
         return CandidateSignal(
             symbol=snapshot.symbol,
             direction=Direction.LONG,
@@ -265,16 +282,21 @@ class S1LiquiditySweep(StrategyBase):
     ) -> CandidateSignal | None:
         sweep_dist_short = (l_low - current.low) / atr14
         if sweep_dist_short < cfg["penetration_min_atr"]:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "short_sweep_below_threshold")
             return None
         if not (current.low < l_low):
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "short_sweep_not_below_level")
             return None
         if not (current.close > l_low):
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "short_reclaim_not_above_level")
             return None
         reclaim_band_atr = cfg["reclaim_band_atr"]
         if not (current.close <= l_low + reclaim_band_atr * atr14):
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "short_reclaim_outside_band")
             return None
 
         if taker_buy_ratio > cfg["taker_sell_max_short"]:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "short_taker_flow_above_threshold")
             return None
 
         entry_offset_atr = cfg["entry_offset_atr"]
@@ -286,6 +308,7 @@ class S1LiquiditySweep(StrategyBase):
         stop_loss = max(current.high, prev.high) + sl_buffer_atr * atr14
 
         if stop_loss <= entry_high:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "short_stop_geometry_invalid")
             return None  # degenerate geometry
 
         # R from the entry-zone MIDPOINT (see LONG branch comment above
@@ -320,6 +343,7 @@ class S1LiquiditySweep(StrategyBase):
             reclaim_threshold, reclaim_raw, reclaim_factor,
         )
         if breakdown["final"] <= 0.0:
+            diagnostic_strategy(snapshot.symbol, "S1", "rejected", "zero_confidence_factor")
             zero_factors = [
                 key for key, value in breakdown.items()
                 if isinstance(value, (int, float)) and value == 0.0
@@ -344,6 +368,7 @@ class S1LiquiditySweep(StrategyBase):
             "taker_sell_max_short": cfg["taker_sell_max_short"], "confidence_breakdown": breakdown,
         }
 
+        diagnostic_strategy(snapshot.symbol, "S1", "candidate", "short_sweep_setup_valid", {"confidence": breakdown["final"]})
         return CandidateSignal(
             symbol=snapshot.symbol,
             direction=Direction.SHORT,
