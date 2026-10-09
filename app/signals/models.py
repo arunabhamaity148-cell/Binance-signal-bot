@@ -3,7 +3,7 @@
 Implements SIGNAL_MODEL.md exactly: a frozen pydantic model with every
 construction-time invariant enforced as a validator. A Signal that
 fails validation raises at construction time and is treated as a
-G12-class self-consistency failure — never silently coerced into a
+data-consistency failure — never silently coerced into a
 "close enough" valid signal.
 """
 

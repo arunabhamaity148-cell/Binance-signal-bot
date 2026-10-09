@@ -177,7 +177,9 @@ def validate_strategy(data: dict[str, Any]) -> list[str]:
 def validate_veto(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     _err(errors, data.get("diagnostic_level", "summary") in {"off", "summary", "verbose"}, "veto.yaml: diagnostic_level must be off, summary, or verbose")
-    required_guards = {f"g{i}_" for i in range(1, 17)}
+    required_guards = {
+        "g1_", "g2_", "g4_", "g5_", "g6_", "g8_", "g9_",
+    }
     present_prefixes = {k.split("_")[0] + "_" for k in data.keys()}
     for prefix in required_guards:
         _err(errors, any(k.startswith(prefix) for k in data.keys()),
@@ -192,12 +194,6 @@ def validate_veto(data: dict[str, Any]) -> list[str]:
         severity = section.get("severity")
         _err(errors, severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"),
              f"veto.yaml: {guard_key}.severity must be one of CRITICAL/HIGH/MEDIUM/LOW, got {severity!r}")
-
-    g16 = data.get("g16_multi_tf_confluence", {})
-    _err(errors, isinstance(g16.get("enabled"), bool), "veto.yaml: g16_multi_tf_confluence.enabled must be boolean")
-    for key in ("htf_1h_ema_fast", "htf_1h_ema_slow", "htf_4h_structure_bars"):
-        _err(errors, isinstance(g16.get(key), int) and g16[key] > 0,
-             f"veto.yaml: g16_multi_tf_confluence.{key} must be a positive int")
 
     return errors
 

@@ -1,8 +1,13 @@
-from __future__ import annotations
-from tests.veto.test_veto_guards import _base_snapshot, _empty_news, _sample_candidate, _flat_bars, VETO_CFG, FeedHealth, OrderBookState, DerivativesState, TimestampedValue, GuardAction, NewsEvent, NewsState, NewsCategory, NewsDirection, NewsSeverity, OHLC, SymbolKlines , CandidateSignal
-from app.risk import veto
-from app.core.models import GuardResult, GuardSeverity
+"""Retirement regression for removed G10 (g10_orderbook_instability)."""
 
-def test_g10_blocks_crossed_book():
-    s=_base_snapshot(orderbook=OrderBookState("BTCUSDT",101,100,500_000,500_000,10_000_000,10_000_000))
-    assert not veto.guard_g10_orderbook_instability(s,_empty_news(),None,VETO_CFG["g10_orderbook_instability"]).passed
+from pathlib import Path
+
+import yaml
+
+from app.risk import veto
+
+
+def test_g10_orderbook_instability_is_removed_from_production_stack():
+    cfg = yaml.safe_load(Path("config/veto.yaml").read_text())
+    assert "g10_orderbook_instability" not in cfg
+    assert not hasattr(veto, "guard_g10_orderbook_instability")

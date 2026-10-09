@@ -386,7 +386,7 @@ class LiveSnapshotCache:
         c=self.data[symbol]; pair=self.cfg.pair_config(symbol); stamp=now_ms()
         ob=depth_and_ticker_to_orderbook_state(
             c["depth"], c["ticker"],
-            depth_check_levels=int(self.cfg.veto["g3_depth_collapse"].get("depth_check_levels", 5)),
+            depth_check_levels=20,
             received_ts_ms=stamp,
         )
         flows=_flow_from_trades(symbol,c["trades"],c["klines"]["5m"].bars,stamp) if c["trades"] else None
@@ -874,7 +874,7 @@ class SignalBot:
                 veto_outcome=veto,size_units_advisory=sizing.qty,notional_usd_advisory=sizing.notional_usd,
                 expiry_per_grade=self.cfg.risk["expiry_per_grade"],created_ts_ms=snapshot.as_of_ts_ms,
                 sizing_multiplier=sizing_multiplier, regime=regime_name,
-                htf_confluence=any(r.guard_name == "G16" and r.passed for r in veto.guard_results))
+                htf_confluence=False)
             signal=self._populate_delta_fields(signal)
             if signal.veto_state!="PASS":
                 for item in group:

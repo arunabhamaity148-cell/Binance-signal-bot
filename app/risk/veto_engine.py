@@ -1,17 +1,10 @@
-"""Veto engine.
+"""Production veto engine for the seven signal-only guards.
 
-Runs enabled guards in the configured order. The signal-only production
-configuration keeps this seven-guard sequence:
-
+Execution order:
     G1 -> G2 -> G4 -> G5 -> G6 -> G8 -> G9
 
-Any HARD BLOCK short-circuits remaining guard evaluation for that
-candidate (a performance optimization; each guard remains
-independently testable in isolation per app/risk/veto.py).
-
-An uncaught exception inside any guard is caught here and converted
-into a BLOCK with reason "guard_exception:<GuardName>" — never a
-silent pass (spec section 12).
+A hard block short-circuits later guards. Guard exceptions fail closed as
+explicit blocks; no guard result is silently swallowed.
 """
 
 from __future__ import annotations
@@ -29,13 +22,15 @@ from app.core.models import (
     VetoState,
 )
 from app.risk import veto
-from app.risk.veto_g16 import guard_g16_multi_tf_confluence
+
+
+_ACTIVE_GUARDS = ("G1", "G2", "G4", "G5", "G6", "G8", "G9")
 
 
 def _safe_call(guard_name: str, fn, *args, **kwargs) -> GuardResult:
     try:
         return fn(*args, **kwargs)
-    except Exception as exc:  # noqa: BLE001 - intentional: any guard exception becomes a BLOCK
+    except Exception as exc:  # noqa: BLE001 - guard failures must fail closed
         wrapped = GuardExecutionError(guard_name, exc)
         return GuardResult(
             guard_name=guard_name,
@@ -56,12 +51,7 @@ def run_veto_engine(
     funding_z: float | None = None,
     btc_trend_direction: str | None = None,
 ) -> VetoOutcome:
-    """Run enabled guards in the specified order against one candidate
-    (or against the market/feed state alone if candidate is None, used
-    for standalone health checks). Returns a VetoOutcome aggregating
-    every guard result, the overall veto_state, and any grade cap from
-    DEGRADE actions.
-    """
+    """Evaluate the seven configured production guards for one snapshot."""
     results: list[GuardResult] = []
 
     def run_guard(name: str, config_key: str, fn, *args, **kwargs) -> bool:
@@ -75,31 +65,14 @@ def run_veto_engine(
         return _finalize(results, symbol=snapshot.symbol)
     if run_guard("G2", "g2_feed_health", veto.guard_g2_feed_health, snapshot, news_state, candidate, veto_cfg["g2_feed_health"]):
         return _finalize(results, symbol=snapshot.symbol)
-    if run_guard("G10", "g10_orderbook_instability", veto.guard_g10_orderbook_instability, snapshot, news_state, candidate, veto_cfg["g10_orderbook_instability"]):
-        return _finalize(results, symbol=snapshot.symbol)
-    if run_guard("G3", "g3_depth_collapse", veto.guard_g3_depth_collapse, snapshot, news_state, candidate, veto_cfg["g3_depth_collapse"], symbol_tier=symbol_tier):
-        return _finalize(results, symbol=snapshot.symbol)
     if run_guard("G4", "g4_spread_explosion", veto.guard_g4_spread_explosion, snapshot, news_state, candidate, veto_cfg["g4_spread_explosion"], symbol_tier=symbol_tier):
         return _finalize(results, symbol=snapshot.symbol)
     if run_guard("G5", "g5_oi_anomaly", veto.guard_g5_oi_anomaly, snapshot, news_state, candidate, veto_cfg["g5_oi_anomaly"]):
         return _finalize(results, symbol=snapshot.symbol)
-    if run_guard("G13", "g13_oi_divergence", veto.guard_g13_oi_divergence, snapshot, news_state, candidate, veto_cfg["g13_oi_divergence"]):
-        return _finalize(results, symbol=snapshot.symbol)
-    run_guard("G14", "g14_oi_stagnation", veto.guard_g14_oi_stagnation, snapshot, news_state, candidate, veto_cfg["g14_oi_stagnation"])
-    if run_guard("G15", "g15_oi_percentile_extreme", veto.guard_g15_oi_percentile_extreme, snapshot, news_state, candidate, veto_cfg["g15_oi_percentile_extreme"]):
-        return _finalize(results, symbol=snapshot.symbol)
-    if run_guard("G16", "g16_multi_tf_confluence", guard_g16_multi_tf_confluence, snapshot, news_state, candidate, veto_cfg.get("g16_multi_tf_confluence", {})):
-        return _finalize(results, symbol=snapshot.symbol)
     run_guard("G6", "g6_funding_extreme", veto.guard_g6_funding_extreme, snapshot, news_state, candidate, veto_cfg["g6_funding_extreme"], funding_z=funding_z)
-    if run_guard("G7", "g7_news_shock", veto.guard_g7_news_shock, snapshot, news_state, candidate, veto_cfg["g7_news_shock"]):
+    if run_guard("G8", "g8_volatility_flash", veto.guard_g8_volatility_flash, snapshot, news_state, candidate, veto_cfg["g8_volatility_flash"]):
         return _finalize(results, symbol=snapshot.symbol)
-    run_guard("G8", "g8_volatility_flash", veto.guard_g8_volatility_flash, snapshot, news_state, candidate, veto_cfg["g8_volatility_flash"])
     run_guard("G9", "g9_btc_regime", veto.guard_g9_btc_regime, snapshot, news_state, candidate, veto_cfg["g9_btc_regime"], btc_trend_direction=btc_trend_direction)
-    if run_guard("G11", "g11_execution_quality", veto.guard_g11_execution_quality, snapshot, news_state, candidate, veto_cfg["g11_execution_quality"], symbol_tier=symbol_tier, prior_results=results):
-        return _finalize(results, symbol=snapshot.symbol)
-    if run_guard("G12", "g12_self_consistency", veto.guard_g12_self_consistency, snapshot, news_state, candidate, veto_cfg["g12_self_consistency"]):
-        return _finalize(results, symbol=snapshot.symbol)
-
     return _finalize(results, symbol=snapshot.symbol)
 
 
@@ -126,7 +99,6 @@ def _finalize(results: list[GuardResult], *, symbol: str = "UNKNOWN") -> VetoOut
     degrades = [r for r in results if not r.passed and r.action == GuardAction.DEGRADE and r.degrade_max_grade]
     max_grade_cap: str | None = None
     if degrades:
-        # Most restrictive cap wins: "B" is more restrictive than "A".
         grade_order = {"A+": 2, "A": 1, "B": 0}
         max_grade_cap = min((d.degrade_max_grade for d in degrades), key=lambda g: grade_order.get(g, 99))
 

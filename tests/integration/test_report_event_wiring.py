@@ -43,7 +43,7 @@ async def test_only_actual_blocking_guard_results_are_persisted(monkeypatch):
     })
     guards = (
         GuardResult("G2", False, GuardSeverity.CRITICAL, GuardAction.BLOCK, "feed unhealthy"),
-        GuardResult("G14", False, GuardSeverity.LOW, GuardAction.DEGRADE, "degraded only"),
+        GuardResult("G9", False, GuardSeverity.LOW, GuardAction.DEGRADE, "degraded only"),
     )
     monkeypatch.setattr("app.bot.run_veto_engine", lambda **_: VetoOutcome(
         VetoState.BLOCK, "G2 blocked", None, guards

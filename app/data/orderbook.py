@@ -1,7 +1,7 @@
 """Order book state construction.
 
-For this bot's purposes (spread and top-of-book depth for guards
-G3/G4/G10/G11), we don't need to maintain a fully diffed, incrementally
+For this bot's purposes (spread and top-of-book depth for the active
+spread guard), we don't need to maintain a fully diffed, incrementally
 updated local order book — the `depth20@100ms` stream already delivers
 a top-20 snapshot on every update, which is sufficient. This module
 converts that snapshot plus the latest bookTicker into an

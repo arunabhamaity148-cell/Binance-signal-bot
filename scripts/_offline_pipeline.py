@@ -89,7 +89,7 @@ def run_offline_pipeline(cfg: AppConfig, symbol: str, assumed_equity_usd: float)
                 veto_outcome=outcome,size_units_advisory=size.qty,notional_usd_advisory=size.notional_usd,
                 expiry_per_grade=cfg.risk["expiry_per_grade"],created_ts_ms=snap.as_of_ts_ms,
                 sizing_multiplier=multiplier,regime=regime.value,
-                htf_confluence=any(r.guard_name=="G16" and r.passed for r in outcome.guard_results))
+                htf_confluence=False)
             built.append(signal)
             if signal.rr_tp2>=cfg.risk["min_rr_tp2"]: eligible.append(signal)
         except Exception as exc:

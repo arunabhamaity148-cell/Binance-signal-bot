@@ -16,7 +16,7 @@ minimum:
   - every named threshold constant actually used in that evaluation
 
 This is enforced by `validate_meta_contract` below and is what makes
-guard G12 (self-consistency re-derivation) possible.
+runtime consistency checks possible.
 
 R CONVENTION (mandatory for every strategy, S1-S5)
 ---------------------------------------------------
@@ -192,6 +192,6 @@ class StrategyBase(ABC):
 
 def validate_meta_contract(candidate: CandidateSignal) -> list[str]:
     """Returns a list of missing required meta keys (empty if all
-    present). Used by tests and by guard G12 to assert the audit trail
+    present). Used by tests to assert the audit trail
     is complete before attempting recomputation."""
     return [k for k in REQUIRED_META_KEYS if k not in candidate.meta]

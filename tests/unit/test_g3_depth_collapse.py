@@ -1,9 +1,13 @@
-from __future__ import annotations
-from tests.veto.test_veto_guards import _base_snapshot, _empty_news, _sample_candidate, _flat_bars, VETO_CFG, FeedHealth, OrderBookState, DerivativesState, TimestampedValue, GuardAction, NewsEvent, NewsState, NewsCategory, NewsDirection, NewsSeverity, OHLC, SymbolKlines , CandidateSignal
-from app.risk import veto
-from app.core.models import GuardResult, GuardSeverity
+"""Retirement regression for removed G3 (g3_depth_collapse)."""
 
-def test_g3_blocks_below_symbol_tier_minimum():
-    s=_base_snapshot(orderbook=OrderBookState("BTCUSDT",99,101,199_999,500_000,10_000_000,10_000_000))
-    r=veto.guard_g3_depth_collapse(s,_empty_news(),None,VETO_CFG["g3_depth_collapse"],symbol_tier="majors")
-    assert not r.passed
+from pathlib import Path
+
+import yaml
+
+from app.risk import veto
+
+
+def test_g3_depth_collapse_is_removed_from_production_stack():
+    cfg = yaml.safe_load(Path("config/veto.yaml").read_text())
+    assert "g3_depth_collapse" not in cfg
+    assert not hasattr(veto, "guard_g3_depth_collapse")

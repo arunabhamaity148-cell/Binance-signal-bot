@@ -296,7 +296,7 @@ class SignalRepository:
         self, *, guard_name: str, symbol: str, strategy_source: str,
         event_ts_ms: int, message: str,
     ) -> None:
-        if guard_name not in {f"G{i}" for i in range(1, 17)}:
+        if guard_name not in {"G1", "G2", "G4", "G5", "G6", "G8", "G9"}:
             raise ValueError(f"invalid guard_name: {guard_name!r}")
         await self._insert_runtime_event(
             event_type="VETO_BLOCK", created_ts_ms=event_ts_ms,

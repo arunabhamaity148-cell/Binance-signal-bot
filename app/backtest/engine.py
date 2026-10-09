@@ -298,17 +298,9 @@ def run_single_symbol_backtest(
             if grade is None:
                 continue
             representative = group[0]
-            veto_cfg = cfg.veto
-            if not all_bars.get("1h") or not all_bars.get("4h"):
-                # A 5M-only replay cannot honestly evaluate a higher-timeframe
-                # confluence edge; live snapshots always carry both inputs.
-                veto_cfg = dict(cfg.veto)
-                veto_cfg["g16_multi_tf_confluence"] = dict(
-                    cfg.veto.get("g16_multi_tf_confluence", {}), enabled=False
-                )
             veto_outcome = run_veto_engine(
                 snapshot=snapshot, news_state=news_state, candidate=representative,
-                veto_cfg=veto_cfg, symbol_tier=bt_cfg.symbol_tier, funding_z=None, btc_trend_direction=None,
+                veto_cfg=cfg.veto, symbol_tier=bt_cfg.symbol_tier, funding_z=None, btc_trend_direction=None,
             )
             if veto_outcome.veto_state.value != "PASS":
                 continue

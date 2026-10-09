@@ -1,8 +1,13 @@
-from __future__ import annotations
-from tests.veto.test_veto_guards import _base_snapshot, _empty_news, _sample_candidate, _flat_bars, VETO_CFG, FeedHealth, OrderBookState, DerivativesState, TimestampedValue, GuardAction, NewsEvent, NewsState, NewsCategory, NewsDirection, NewsSeverity, OHLC, SymbolKlines , CandidateSignal
-from app.risk import veto
-from app.core.models import GuardResult, GuardSeverity
+"""Retirement regression for removed G11 (g11_execution_quality)."""
 
-def test_g11_short_circuits_after_g3_block():
-    prior=[GuardResult("G3",False,GuardSeverity.CRITICAL,GuardAction.BLOCK,"thin")]
-    assert veto.guard_g11_execution_quality(_base_snapshot(),_empty_news(),_sample_candidate(),VETO_CFG["g11_execution_quality"],symbol_tier="majors",prior_results=prior).passed
+from pathlib import Path
+
+import yaml
+
+from app.risk import veto
+
+
+def test_g11_execution_quality_is_removed_from_production_stack():
+    cfg = yaml.safe_load(Path("config/veto.yaml").read_text())
+    assert "g11_execution_quality" not in cfg
+    assert not hasattr(veto, "guard_g11_execution_quality")

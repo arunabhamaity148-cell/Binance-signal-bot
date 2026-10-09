@@ -1,36 +1,32 @@
-from __future__ import annotations
+"""The production configuration contains exactly seven veto guards."""
 
-from app.config import load_and_validate_all
+from pathlib import Path
+
+import yaml
 
 
-ACTIVE = {"G1", "G2", "G4", "G5", "G6", "G8", "G9"}
-DISABLED = {"G3", "G7", "G10", "G11", "G12", "G13", "G14", "G15", "G16"}
-CONFIG_KEYS = {
-    "G1": "g1_data_integrity",
-    "G2": "g2_feed_health",
-    "G3": "g3_depth_collapse",
-    "G4": "g4_spread_explosion",
-    "G5": "g5_oi_anomaly",
-    "G6": "g6_funding_extreme",
-    "G7": "g7_news_shock",
-    "G8": "g8_volatility_flash",
-    "G9": "g9_btc_regime",
-    "G10": "g10_orderbook_instability",
-    "G11": "g11_execution_quality",
-    "G12": "g12_self_consistency",
-    "G13": "g13_oi_divergence",
-    "G14": "g14_oi_stagnation",
-    "G15": "g15_oi_percentile_extreme",
-    "G16": "g16_multi_tf_confluence",
+ACTIVE = {
+    "g1_data_integrity", "g2_feed_health", "g4_spread_explosion",
+    "g5_oi_anomaly", "g6_funding_extreme", "g8_volatility_flash",
+    "g9_btc_regime",
+}
+REMOVED = {
+    "g3_depth_collapse", "g7_news_shock", "g10_orderbook_instability",
+    "g11_execution_quality", "g12_self_consistency", "g13_oi_divergence",
+    "g14_oi_stagnation", "g15_oi_percentile_extreme", "g16_multi_tf_confluence",
 }
 
 
-def test_veto_stack_has_exactly_seven_active_guards():
-    cfg = load_and_validate_all()
-    enabled = {name for name, key in CONFIG_KEYS.items() if cfg.veto[key].get("enabled", True)}
+def _config():
+    return yaml.safe_load(Path("config/veto.yaml").read_text())
 
-    assert enabled == ACTIVE
-    assert len(enabled) == 7
-    assert DISABLED == set(CONFIG_KEYS) - enabled
-    assert all(cfg.veto[CONFIG_KEYS[name]].get("enabled") is True for name in ACTIVE)
-    assert all(cfg.veto[CONFIG_KEYS[name]].get("enabled") is False for name in DISABLED)
+
+def test_veto_stack_has_exactly_seven_active_guards():
+    cfg = _config()
+    configured = {k for k, v in cfg.items() if isinstance(v, dict)}
+    assert configured == ACTIVE
+    assert {k for k, v in cfg.items() if isinstance(v, dict) and v.get("enabled")} == ACTIVE
+
+
+def test_removed_veto_sections_are_absent():
+    assert not (set(_config()) & REMOVED)

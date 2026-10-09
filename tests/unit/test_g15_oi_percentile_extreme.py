@@ -1,7 +1,13 @@
-from __future__ import annotations
-from tests.veto.test_veto_guards import _base_snapshot, _empty_news, _sample_candidate, _flat_bars, VETO_CFG, FeedHealth, OrderBookState, DerivativesState, TimestampedValue, GuardAction, NewsEvent, NewsState, NewsCategory, NewsDirection, NewsSeverity, OHLC, SymbolKlines , CandidateSignal
-from app.risk import veto
-from app.core.models import GuardResult, GuardSeverity
+"""Retirement regression for removed G15 (g15_oi_percentile_extreme)."""
 
-def test_g15_ignores_non_s4():
-    assert veto.guard_g15_oi_percentile_extreme(_base_snapshot(),_empty_news(),_sample_candidate("S1"),VETO_CFG["g15_oi_percentile_extreme"]).passed
+from pathlib import Path
+
+import yaml
+
+from app.risk import veto
+
+
+def test_g15_oi_percentile_extreme_is_removed_from_production_stack():
+    cfg = yaml.safe_load(Path("config/veto.yaml").read_text())
+    assert "g15_oi_percentile_extreme" not in cfg
+    assert not hasattr(veto, "guard_g15_oi_percentile_extreme")
