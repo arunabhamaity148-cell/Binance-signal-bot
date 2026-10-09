@@ -160,6 +160,9 @@ class NewsCollector:
         shouldn't discard every other valid entry in it).
         """
         health = self.health_for(source.name)
+        if not getattr(source, "enabled", True):
+            health.disabled = True
+            raise NewsSourceUnavailableError(f"{source.name}: source disabled by configuration")
         attempt = 0
         while True:
             attempt += 1
