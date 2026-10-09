@@ -21,6 +21,7 @@ import random
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit, urlunsplit
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -33,7 +34,7 @@ logger = get_logger(__name__)
 
 TESTNET_WS_BASE_URL = "wss://stream.binancefuture.com/stream"
 
-_ALLOWED_STREAM_SUFFIXES = ("@aggTrade", "@markPrice", "@bookTicker", "@depth20@100ms")
+_ALLOWED_STREAM_SUFFIXES = ("@aggTrade", "@markPrice", "@markPrice@1s", "@bookTicker", "@depth20@100ms")
 
 
 def _is_allowed_stream(stream: str) -> bool:
@@ -104,6 +105,8 @@ class BinanceWebSocketClient:
         self._last_resync_task: asyncio.Task | None = None
         self._last_connected_monotonic: float | None = None
         self._last_disconnect_monotonic: float | None = None
+        self._subscriptions_acked = 0
+        self._subscription_rejections: list[object] = []
 
     def set_resync_callback(self, callback: Callable[[], object]) -> None:
         """Registered by the snapshot layer: called whenever a
@@ -151,15 +154,22 @@ class BinanceWebSocketClient:
                         "stream": configured_stream,
                         "symbol": configured_stream.split("@", 1)[0].upper(),
                         "silent_s": int(silent_s),
-                        "reconnect_triggered": False,
+                        "reconnect_triggered": self._is_critical_stream(configured_stream),
                     }})
                     silent_streams.append(configured_stream)
-            if silent_streams:
+            critical_silent = [stream for stream in silent_streams if self._is_critical_stream(stream)]
+            if critical_silent:
+                for stream in critical_silent:
+                    logger.warning("ws_forced_reconnect", extra={"context": {
+                        "reason": "silent_stream",
+                        "stream": stream,
+                        "silent_s": int(silent_s),
+                    }})
                 logger.warning("ws_stream_reconnect_triggered", extra={"context": {
-                    "silent_streams": silent_streams,
+                    "silent_streams": critical_silent,
                     "reconnect_triggered": True,
                 }})
-                await ws.close(code=4000, reason=f"silent streams: {','.join(silent_streams[:3])}")
+                await ws.close(code=4000, reason=f"silent streams: {','.join(critical_silent[:3])}")
                 return
 
     def _log_no_rehydrate(self) -> None:
@@ -182,20 +192,144 @@ class BinanceWebSocketClient:
         )
 
     def _stream_url(self) -> str:
-        joined = "/".join(self._streams)
-        return f"{self._config.base_ws_url}?streams={joined}"
+        parsed = urlsplit(self._config.base_ws_url)
+        if parsed.hostname == "fstream.binance.com" and parsed.path.rstrip("/") == "/stream":
+            # Binance split futures market streams into category paths.
+            # /market/stream is the combined endpoint that supports the
+            # SUBSCRIBE method for all requested market stream families.
+            return urlunsplit(parsed._replace(path="/market/stream", query=""))
+        return self._config.base_ws_url
+
+    @staticmethod
+    def _is_critical_stream(stream: str) -> bool:
+        normalized = stream.lower()
+        return normalized.endswith("@aggtrade") or normalized.endswith("@kline_5m")
+
+    async def _send_subscribe(self, ws) -> None:
+        request = {"method": "SUBSCRIBE", "params": list(self._streams), "id": 1}
+        message = json.dumps(request, separators=(",", ":"))
+        logger.info("ws_subscribe_send", extra={"context": {
+            "raw_json": message,
+            "params": list(self._streams),
+            "requested": len(self._streams),
+        }})
+        # A few legacy unit-test sockets model only receive behavior. Binance's
+        # real websocket always supplies send(), so keep those doubles usable.
+        send = getattr(ws, "send", None)
+        if send is not None:
+            await send(message)
+
+    def _handle_subscription_ack(self, message: dict) -> bool:
+        if message.get("id") != 1 or ("result" not in message and "error" not in message):
+            return False
+        error = message.get("error")
+        if error is None and message.get("result") is None:
+            self._subscriptions_acked = len(self._streams)
+            self._subscription_rejections = []
+        else:
+            self._subscriptions_acked = 0
+            self._subscription_rejections = [error if error is not None else message.get("result")]
+        logger.info("ws_subscribe_ack", extra={"context": {
+            "requested": len(self._streams),
+            "acked": self._subscriptions_acked,
+            "rejected": list(self._subscription_rejections),
+            "response": message,
+        }})
+        return True
+
+    def _stream_from_raw_payload(self, payload: dict) -> str | None:
+        symbol = str(payload.get("s") or payload.get("k", {}).get("s") or "").lower()
+        event = payload.get("e")
+        suffix = {
+            "aggTrade": "@aggTrade",
+            "markPriceUpdate": "@markPrice@1s",
+            "depthUpdate": "@depth20@100ms",
+            "bookTicker": "@bookTicker",
+        }.get(event)
+        if event == "kline":
+            interval = payload.get("k", {}).get("i")
+            suffix = f"@kline_{interval}" if interval else None
+        if not symbol or suffix is None:
+            return None
+        candidate = f"{symbol}{suffix}"
+        return self._stream_aliases.get(candidate.lower(), candidate)
 
     def _backoff_delay_s(self, attempt: int) -> float:
         base = self._config.base_backoff_ms * (2 ** (attempt - 1)) / 1000.0
         jitter = random.uniform(0, self._config.jitter_ms) / 1000.0
         return min(base + jitter, self._config.max_reconnect_backoff_s)
 
+    def _endpoint_groups(self) -> list[tuple[str, list[str]]]:
+        """Return endpoint groups required by Binance's current WS split."""
+        parsed = urlsplit(self._stream_url())
+        if parsed.hostname != "fstream.binance.com" or parsed.path.rstrip("/") != "/market/stream":
+            return [(self._config.base_ws_url, list(self._streams))]
+        public = [stream for stream in self._streams if stream.lower().endswith(("@bookticker", "@depth20@100ms"))]
+        market = [stream for stream in self._streams if stream not in public]
+        endpoints = []
+        if public:
+            endpoints.append((urlunsplit(parsed._replace(path="/public/stream", query="")), public))
+        if market:
+            endpoints.append((self._config.base_ws_url, market))
+        return endpoints
+
     async def messages(self) -> AsyncIterator[tuple[str, dict]]:
+        groups = self._endpoint_groups()
+        if len(groups) == 1:
+            async for item in self._messages_single():
+                yield item
+            return
+
+        queue: asyncio.Queue[tuple[str, dict] | BaseException | None] = asyncio.Queue()
+        children: list[BinanceWebSocketClient] = []
+
+        async def pump(endpoint: str, streams: list[str]) -> None:
+            child_config = WebSocketClientConfig(
+                endpoint,
+                max_reconnect_backoff_s=self._config.max_reconnect_backoff_s,
+                base_backoff_ms=self._config.base_backoff_ms,
+                jitter_ms=self._config.jitter_ms,
+                max_reconnects_per_window=self._config.max_reconnects_per_window,
+                reconnect_window_s=self._config.reconnect_window_s,
+                binance_env="mainnet",
+            )
+            child = BinanceWebSocketClient(child_config, streams)
+            child.set_resync_callback(self._on_resync_required) if self._on_resync_required else None
+            children.append(child)
+            try:
+                async for stream, payload in child._messages_single():
+                    self._connected = child.is_connected
+                    self._message_counts[stream] = self._message_counts.get(stream, 0) + 1
+                    if child._last_message_ts_ms.get(stream) is not None:
+                        self._last_message_ts_ms[stream] = child._last_message_ts_ms[stream]
+                    await queue.put((stream, payload))
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                await queue.put(exc)
+
+        tasks = [asyncio.create_task(pump(endpoint, streams), name=f"binance-ws-{index}")
+                 for index, (endpoint, streams) in enumerate(groups)]
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _messages_single(self) -> AsyncIterator[tuple[str, dict]]:
         attempt = 0
         while True:
             try:
                 async with websockets.connect(self._stream_url(), ping_interval=20) as ws:
                     self._connected = True
+                    await self._send_subscribe(ws)
                     connected_at=time.monotonic()
                     reconnect_duration_ms=None
                     if self._last_disconnect_monotonic is not None:
@@ -221,8 +355,12 @@ class BinanceWebSocketClient:
                             except json.JSONDecodeError:
                                 logger.warning("dropped malformed WS message (non-JSON)")
                                 continue
+                            if self._handle_subscription_ack(envelope):
+                                continue
                             stream = envelope.get("stream")
-                            payload = envelope.get("data")
+                            payload = envelope.get("data") if stream is not None else envelope
+                            if stream is None:
+                                stream = self._stream_from_raw_payload(payload)
                             if stream is None or payload is None:
                                 logger.warning("dropped WS envelope missing stream/data", extra={"context": {"envelope": envelope}})
                                 continue

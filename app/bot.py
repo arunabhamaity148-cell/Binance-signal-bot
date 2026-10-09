@@ -92,7 +92,7 @@ class LiveSnapshotCache:
 
     def _streams(self,symbols):
         return [f"{s.lower()}@{stream}" for s in symbols for stream in
-                ("aggTrade","depth20@100ms","bookTicker","markPrice",*(f"kline_{tf}" for tf in _TIMEFRAMES))]
+                ("aggTrade","depth20@100ms","bookTicker","markPrice@1s",*(f"kline_{tf}" for tf in _TIMEFRAMES))]
 
     async def start(self,symbols):
         self.ws=self.ws_factory(WebSocketClientConfig(
@@ -263,7 +263,7 @@ class LiveSnapshotCache:
         elif normalized_stream.endswith("@depth20@100ms"): c["depth"]=RawDepthSnapshot.from_ws_payload(payload,symbol)
         elif normalized_stream.endswith("@bookticker"): c["ticker"]=RawBookTicker.from_ws_payload(payload)
         elif normalized_stream.endswith("@aggtrade"): c["trades"].append(RawAggTrade.from_ws_payload(payload))
-        elif normalized_stream.endswith("@markprice") and c["derivatives"] is not None:
+        elif (normalized_stream.endswith("@markprice") or normalized_stream.endswith("@markprice@1s")) and c["derivatives"] is not None:
             d=c["derivatives"]; value=TimestampedValue(float(payload["p"]),int(payload.get("E",received)),received)
             c["derivatives"]=type(d)(d.symbol,d.funding_rate_history,d.open_interest_history_5m,d.open_interest_history_15m,
                 d.open_interest_history_1h,d.open_interest_history_1d,d.long_short_account_ratio_history,
@@ -290,11 +290,7 @@ class LiveSnapshotCache:
         c=self.data.get(symbol,{})
         received=c.get("received",{})
         lower=symbol.lower()
-        five=c.get("klines",{}).get("5m")
-        bars=getattr(five,"bars",()) if five is not None else ()
         kline_stamp=received.get(f"{lower}@kline_5m")
-        if kline_stamp is None:
-            kline_stamp=getattr(bars[-1],"close_time_ms",None) if bars else None
         depth,ticker=c.get("depth"),c.get("ticker")
         depth_stamp=received.get(f"{lower}@depth20@100ms") or getattr(depth,"event_time_ms",None)
         ticker_stamp=received.get(f"{lower}@bookticker") or getattr(ticker,"event_time_ms",None)
