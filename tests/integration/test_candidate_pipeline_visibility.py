@@ -32,7 +32,7 @@ async def test_s1_candidate_pending_and_created_are_visible_at_info(caplog, tmp_
         pending = [r for r in caplog.records if r.getMessage() == "s1_candidate_pending"]
         created = [r for r in caplog.records if r.getMessage() == "candidate_created"]
         evaluations = [r for r in caplog.records if r.getMessage() == "strategy_eval"]
-        assert pending and pending[0].context["confidence"] >= 0.69
+        assert pending and pending[0].context["confidence"] > 0.55
         assert created and created[0].context["stage"] == "created"
         assert evaluations and evaluations[0].context["s1_cand"] == 1
     finally:

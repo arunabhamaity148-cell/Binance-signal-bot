@@ -20,8 +20,8 @@ def _reclaim_factor(*, level: float, close: float, atr: float) -> float:
     return breakdown["reclaim_quality_factor"]
 
 
-def test_reclaim_depth_at_threshold_gets_half_credit():
-    assert _reclaim_factor(level=100.0, close=99.9, atr=1.0) >= 0.5
+def test_reclaim_depth_at_previous_threshold_gets_continuous_credit():
+    assert _reclaim_factor(level=100.0, close=99.9, atr=1.0) == pytest.approx(1 / 3)
 
 
 def test_deeper_reclaim_gets_full_credit():

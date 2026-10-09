@@ -23,6 +23,17 @@ from app.strategies.base import StrategyBase
 logger = get_logger(__name__)
 
 
+def threshold_factor(actual: float, threshold: float) -> float:
+    """Scale positive evidence smoothly from zero to full credit.
+
+    Values on the wrong side of a threshold remain fail-closed. Positive
+    evidence earns proportional credit across ``[0, 2 * threshold]``.
+    """
+    if threshold <= 0 or actual <= 0:
+        return 0.0
+    return min(1.0, actual / (2.0 * threshold))
+
+
 class S1LiquiditySweep(StrategyBase):
     strategy_id = "S1"
 
@@ -32,36 +43,23 @@ class S1LiquiditySweep(StrategyBase):
                               reclaim_distance: float, reclaim_band_atr: float,
                               penetration_min_atr: float, volume_ratio: float) -> dict[str, float]:
         """Convert independent S1 setup quality signals into confidence."""
-        def threshold_factor(actual: float, threshold: float) -> float:
-            """Map threshold -> 0.5 and 2x threshold -> 1.0, fail closed."""
-            if threshold <= 0 or actual + 1e-12 < threshold:
-                return 0.0
-            # A threshold is the minimum qualifying evidence, so it earns
-            # half credit; doubling it earns full credit without letting any
-            # single factor dominate the bounded confidence score.
-            return 0.5 + 0.5 * min(1.0, max(0.0, (actual - threshold) / threshold))
-
         if direction == Direction.LONG:
             taker_strength = taker_buy_ratio - 0.50
         else:
             taker_strength = 0.50 - taker_buy_ratio
         taker_factor = threshold_factor(taker_strength, 0.05)
         # Positive distance means price reclaimed deeper into the swept side;
-        # negative distance is a wrong-side close and fails closed. The
-        # configured band is the maximum raw-valid distance; two-thirds of
-        # that band is the half-credit depth threshold (0.10 ATR today).
-        reclaim_threshold = max(reclaim_band_atr * (2.0 / 3.0), 1e-9)
+        # negative distance is a wrong-side close and fails closed. The raw
+        # reclaim gate and factor normalization use the same band.
+        reclaim_threshold = max(reclaim_band_atr, 1e-9)
         reclaim_factor = threshold_factor(reclaim_distance, reclaim_threshold)
         sweep_factor = threshold_factor(sweep_distance, penetration_min_atr)
         volume_factor = threshold_factor(volume_ratio - 0.5, 0.5)
         quality = (0.35 * taker_factor + 0.30 * reclaim_factor +
                    0.25 * sweep_factor + 0.10 * volume_factor)
-        if min(taker_factor, reclaim_factor, sweep_factor, volume_factor) == 0.0:
-            final = 0.0
-        else:
-            # Keep base confidence as the floor and add a bounded quality
-            # increment; the independent grade-B threshold remains 0.55.
-            final = max(0.0, min(1.0, base_confidence + 0.10 * quality))
+        # Keep base confidence as the floor and add a bounded quality
+        # increment; the independent grade-B threshold remains 0.55.
+        final = max(0.0, min(1.0, base_confidence + 0.10 * quality))
         return {"base": base_confidence, "taker_flow_factor": taker_factor,
                 "reclaim_quality_factor": reclaim_factor, "sweep_distance_factor": sweep_factor,
                 "volume_factor": volume_factor, "final": final}
@@ -220,7 +218,7 @@ class S1LiquiditySweep(StrategyBase):
             reclaim_distance=(l_high - current.close) / atr14, reclaim_band_atr=reclaim_band_atr,
             penetration_min_atr=cfg["penetration_min_atr"], volume_ratio=self._volume_ratio(snapshot.taker_flow),
         )
-        reclaim_threshold = max(reclaim_band_atr * (2.0 / 3.0), 1e-9)
+        reclaim_threshold = max(reclaim_band_atr, 1e-9)
         # Reclaim quality is normalized depth back inside the swept level.
         # A wrong-side close is negative and fails closed at factor stage.
         reclaim_raw = (l_high - current.close) / atr14
@@ -332,7 +330,7 @@ class S1LiquiditySweep(StrategyBase):
             reclaim_distance=(current.close - l_low) / atr14, reclaim_band_atr=reclaim_band_atr,
             penetration_min_atr=cfg["penetration_min_atr"], volume_ratio=self._volume_ratio(snapshot.taker_flow),
         )
-        reclaim_threshold = max(reclaim_band_atr * (2.0 / 3.0), 1e-9)
+        reclaim_threshold = max(reclaim_band_atr, 1e-9)
         reclaim_raw = (current.close - l_low) / atr14
         reclaim_factor = breakdown["reclaim_quality_factor"]
         logger.info("s1_confidence_breakdown", extra={"context": {"symbol": snapshot.symbol, **breakdown}})
