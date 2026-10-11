@@ -7,6 +7,12 @@ risk_per_trade_pct: 0.5                 # class: E, conservative default; unchan
 min_rr_tp2: 1.8                         # class: F
 tp_r_multiples_default: [1.0, 2.0, 3.0, 5.0]   # class: B, overridden per-strategy where noted
 partial_exit_fractions: [0.40, 0.30, 0.20, 0.10]   # class: E, per spec section 21
+# Model B: 30 minutes to reach the entry zone, then up to 2 hours for
+# paper/manual trade management. The bot remains signal-only and never
+# observes or places fills.
+entry_expiry_minutes: 30                    # class: F
+management_horizon_minutes: 120              # class: F
+time_stop_minutes: 60                        # class: F, operator review after entry
 
 # Reporting assumptions only; these do not override the engine's risk_per_trade_pct.
 paper_trading_assumptions:

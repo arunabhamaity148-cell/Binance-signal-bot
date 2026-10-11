@@ -31,7 +31,7 @@ The former venue-specific or redundant guards were **removed from production cod
 - set leverage or transfer funds;
 - guarantee profitability or provide investment advice.
 
-Signals contain advisory entry, stop, targets, confidence, grade, expiry, and sizing. They are not execution instructions and are not evidence of live performance.
+Signals contain advisory entry, stop, targets, confidence, grade, strategy source, and sizing. The current Model B contract gives the entry zone a 30-minute validity window; after a manual entry, the paper/manual management horizon is up to 120 minutes, with review after 60 minutes if TP1 has not triggered and 40/30/20/10% staged targets. These are not execution instructions and are not evidence of live performance.
 
 ## Installation
 

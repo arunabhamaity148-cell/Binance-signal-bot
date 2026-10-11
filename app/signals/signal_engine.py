@@ -17,7 +17,7 @@ import uuid
 
 from app.core.math import round_to_tick
 from app.core.models import CandidateSignal, Direction, MarketSnapshot, VetoOutcome
-from app.core.time_utils import utc_date_str
+from app.core.time_utils import minutes_to_ms, utc_date_str
 from app.signals.expiry import compute_expiry_ts_ms
 from app.signals.models import Signal, build_signal
 from app.signals.tpsl import compute_rr_at_tp, estimate_cost
@@ -43,6 +43,10 @@ def build_final_signal(
     sizing_multiplier: float = 1.0,
     regime: str = "UNKNOWN",
     htf_confluence: bool = False,
+    entry_expiry_minutes: float = 30,
+    management_horizon_minutes: float | None = None,
+    time_stop_minutes: int = 60,
+    partial_exit_fractions: tuple[float, float, float, float] = (0.40, 0.30, 0.20, 0.10),
 ) -> Signal:
     """Construct the final Signal from all upstream computation.
 
@@ -100,9 +104,18 @@ def build_final_signal(
     )
 
     signal_id = generate_signal_id(created_ts_ms)
-    expiry_ts_ms = compute_expiry_ts_ms(
-        created_ts_ms=created_ts_ms, grade=grade, expiry_per_grade=expiry_per_grade
-    )
+    entry_expiry_ts_ms = created_ts_ms + minutes_to_ms(entry_expiry_minutes)
+    if management_horizon_minutes is None:
+        management_expiry_ts_ms = compute_expiry_ts_ms(
+            created_ts_ms=created_ts_ms, grade=grade, expiry_per_grade=expiry_per_grade
+        )
+        management_minutes = expiry_per_grade[grade]
+    else:
+        if management_horizon_minutes <= entry_expiry_minutes:
+            raise ValueError("management_horizon_minutes must exceed entry_expiry_minutes")
+        management_expiry_ts_ms = created_ts_ms + minutes_to_ms(management_horizon_minutes)
+        management_minutes = management_horizon_minutes
+    effective_time_stop_minutes = min(int(time_stop_minutes), int(management_minutes))
 
     merged_meta = dict(candidate.meta)
     merged_meta["channels"] = [c.value for c in candidate.channels]
@@ -112,6 +125,11 @@ def build_final_signal(
     merged_meta["cost_sl_slippage_per_unit"] = cost.sl_leg_slippage
     merged_meta["round_trip_at_tp_per_unit"] = cost.round_trip_at_tp
     merged_meta["round_trip_at_sl_per_unit"] = cost.round_trip_at_sl
+    merged_meta["model"] = "B"
+    merged_meta["entry_validity_minutes"] = entry_expiry_minutes
+    merged_meta["management_horizon_minutes"] = management_minutes
+    merged_meta["time_stop_minutes"] = effective_time_stop_minutes
+    merged_meta["partial_exit_fractions"] = list(partial_exit_fractions)
     merged_meta["guard_results"] = [
         {
             "guard_name": g.guard_name,
@@ -139,7 +157,11 @@ def build_final_signal(
         tp3=tp3,
         tp4=tp4,
         rr_tp2=rr_tp2,
-        expiry_ts_ms=expiry_ts_ms,
+        expiry_ts_ms=management_expiry_ts_ms,
+        entry_expiry_ts_ms=entry_expiry_ts_ms,
+        management_horizon_minutes=int(management_minutes),
+        time_stop_minutes=effective_time_stop_minutes,
+        partial_exit_fractions=partial_exit_fractions,
         why_lines=list(candidate.why_lines),
         veto_state=veto_outcome.veto_state.value,
         veto_reason=veto_outcome.veto_reason,

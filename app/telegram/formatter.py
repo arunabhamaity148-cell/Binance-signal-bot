@@ -14,6 +14,13 @@ from app.core.time_utils import ms_to_minutes
 from app.signals.models import Signal
 
 MAX_MESSAGE_CHARS = 1024
+_STRATEGY_NAMES = {
+    "S1": "Liquidity Sweep",
+    "S2": "Volatility Compression",
+    "S3": "Funding Crowding",
+    "S4": "OI Trend",
+    "S5": "OI Regime",
+}
 
 
 class FormatterError(SignalBotError):
@@ -52,6 +59,12 @@ def _format_expiry_minutes(expiry_ts_ms: int, as_of_ts_ms: int) -> str:
     return f"{int(round(ms_to_minutes(remaining_ms)))}m"
 
 
+def _format_entry_window(signal: Signal) -> str:
+    if signal.entry_expiry_ts_ms is None:
+        return _format_expiry_minutes(signal.expiry_ts_ms, signal.created_ts_ms)
+    return _format_expiry_minutes(signal.entry_expiry_ts_ms, signal.created_ts_ms)
+
+
 def _delta_lines(signal: Signal, *, compact: bool = False) -> list[str]:
     if not signal.delta_available:
         return ["⚠️ Delta prices unavailable — using Binance values only."]
@@ -81,7 +94,6 @@ def _delta_lines(signal: Signal, *, compact: bool = False) -> list[str]:
 def _build_message(signal: Signal, ctx: DeliveryContext, *, concise: bool = False, compact_delta: bool = False,
                    compact_trade: bool = False, include_news: bool = True) -> str:
     symbol = signal.symbol
-    expiry = _format_expiry_minutes(signal.expiry_ts_ms, ctx.as_of_ts_ms)
     news = str(ctx.news_state_label).replace("\n", " ")[:72]
     feed = str(ctx.binance_state_label).replace("\n", " ")[:40]
     advisory = [
@@ -101,11 +113,13 @@ def _build_message(signal: Signal, ctx: DeliveryContext, *, concise: bool = Fals
             "║  🚀 CRYPTO SIGNAL · BINANCE       ║",
             "╚═══════════════════════════════════╝",
             f"💎 {symbol} · {signal.direction} · Grade {signal.grade} · {_copy(_format_confidence_pct(signal.confidence))}",
+            f"🔬 {_copy(signal.strategy_source)}: {_STRATEGY_NAMES.get(signal.strategy_source, 'Unknown')}",
             f"💰 Entry: {_copy(_format_price(signal.entry_low))} — {_copy(_format_price(signal.entry_high))}",
-            f"🛑 SL: {_copy(_format_price(signal.stop_loss))} · ⏳ {_copy(expiry)}",
+            f"🛑 SL: {_copy(_format_price(signal.stop_loss))} · ⏳ Entry valid {_copy(_format_entry_window(signal))}",
             f"🎁 TP1: {_copy(_format_price(signal.tp1))} · TP2: {_copy(_format_price(signal.tp2))}",
             f"🎁 TP3: {_copy(_format_price(signal.tp3))} · TP4: {_copy(_format_price(signal.tp4))}",
             f"📐 R:R: {_copy('1:' + _format_rr(signal.rr_tp2))}",
+            f"🧭 {signal.management_horizon_minutes}m/{signal.time_stop_minutes}m · 40/30/20/10%",
             *advisory,
             *phase1,
         ]
@@ -117,6 +131,7 @@ def _build_message(signal: Signal, ctx: DeliveryContext, *, concise: bool = Fals
             "",
             f"💎 {symbol} · {signal.direction}",
             f"🎖️ Grade: {signal.grade} · Confidence: {_copy(_format_confidence_pct(signal.confidence))}",
+            f"🔬 {_copy(signal.strategy_source)}: {_STRATEGY_NAMES.get(signal.strategy_source, 'Unknown')}",
             "",
             "┌───────────────────────────────────┐",
             "│  💰 ENTRY ZONE                    │",
@@ -131,9 +146,10 @@ def _build_message(signal: Signal, ctx: DeliveryContext, *, concise: bool = Fals
             f"│  🥉 TP3: {_copy(_format_price(signal.tp3))}                     │",
             f"│  🏆 TP4: {_copy(_format_price(signal.tp4))}                     │",
             "├───────────────────────────────────┤",
-            f"│  📐 R:R {_copy('1:' + _format_rr(signal.rr_tp2))} · ⏳ Expiry {_copy(expiry)}   │",
+            f"│  📐 R:R {_copy('1:' + _format_rr(signal.rr_tp2))} · ⏳ Entry {_copy(_format_entry_window(signal))} │",
             "└───────────────────────────────────┘",
             "",
+            f"🧭 {signal.management_horizon_minutes}m/{signal.time_stop_minutes}m · 40/30/20/10%",
             *advisory,
             *phase1,
         ]

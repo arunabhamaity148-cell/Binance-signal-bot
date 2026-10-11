@@ -58,6 +58,14 @@ class Signal(BaseModel):
 
     meta: dict
 
+    # Model B separates the 30-minute entry window from the longer paper
+    # management horizon. expiry_ts_ms remains the management expiry so the
+    # existing lifecycle/open-signal queries continue to work.
+    entry_expiry_ts_ms: int | None = None
+    management_horizon_minutes: int = 120
+    time_stop_minutes: int = 60
+    partial_exit_fractions: tuple[float, float, float, float] = (0.40, 0.30, 0.20, 0.10)
+
     # Optional semi-automated Delta execution values. These never imply
     # order placement; false/None means the public product metadata was not
     # available for this signal.
@@ -155,6 +163,21 @@ class Signal(BaseModel):
             raise ValueError(f"unknown market regime: {self.regime}")
         return self
 
+    @model_validator(mode="after")
+    def _validate_model_b_timing(self) -> "Signal":
+        if self.entry_expiry_ts_ms is not None:
+            if not (self.created_ts_ms < self.entry_expiry_ts_ms <= self.expiry_ts_ms):
+                raise ValueError("entry_expiry_ts_ms must be after creation and no later than expiry_ts_ms")
+        if self.management_horizon_minutes <= 0:
+            raise ValueError("management_horizon_minutes must be positive")
+        if self.time_stop_minutes <= 0 or self.time_stop_minutes > self.management_horizon_minutes:
+            raise ValueError("time_stop_minutes must be positive and no longer than management_horizon_minutes")
+        if len(self.partial_exit_fractions) != 4 or abs(sum(self.partial_exit_fractions) - 1.0) > 1e-9:
+            raise ValueError("partial_exit_fractions must contain four fractions summing to 1.0")
+        if any(f <= 0 for f in self.partial_exit_fractions):
+            raise ValueError("partial_exit_fractions must be positive")
+        return self
+
 
 def build_signal(
     *,
@@ -185,6 +208,10 @@ def build_signal(
     sizing_multiplier: float = 1.0,
     regime: str = "UNKNOWN",
     htf_confluence: bool = False,
+    entry_expiry_ts_ms: int | None = None,
+    management_horizon_minutes: int = 120,
+    time_stop_minutes: int = 60,
+    partial_exit_fractions: tuple[float, float, float, float] = (0.40, 0.30, 0.20, 0.10),
 ) -> Signal:
     """Construct a Signal, additionally validating price-tick and
     qty-step alignment (which require the symbol's exchange filters,
@@ -229,4 +256,8 @@ def build_signal(
         regime=regime,
         htf_confluence=htf_confluence,
         meta=meta,
+        entry_expiry_ts_ms=entry_expiry_ts_ms,
+        management_horizon_minutes=management_horizon_minutes,
+        time_stop_minutes=time_stop_minutes,
+        partial_exit_fractions=partial_exit_fractions,
     )

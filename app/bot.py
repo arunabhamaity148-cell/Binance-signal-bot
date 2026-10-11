@@ -874,7 +874,11 @@ class SignalBot:
                 veto_outcome=veto,size_units_advisory=sizing.qty,notional_usd_advisory=sizing.notional_usd,
                 expiry_per_grade=self.cfg.risk["expiry_per_grade"],created_ts_ms=snapshot.as_of_ts_ms,
                 sizing_multiplier=sizing_multiplier, regime=regime_name,
-                htf_confluence=False)
+                htf_confluence=False,
+                entry_expiry_minutes=self.cfg.risk.get("entry_expiry_minutes", 30),
+                management_horizon_minutes=self.cfg.risk.get("management_horizon_minutes"),
+                time_stop_minutes=self.cfg.risk.get("time_stop_minutes", 60),
+                partial_exit_fractions=tuple(self.cfg.risk.get("partial_exit_fractions", [0.40, 0.30, 0.20, 0.10])))
             signal=self._populate_delta_fields(signal)
             if signal.veto_state!="PASS":
                 for item in group:
