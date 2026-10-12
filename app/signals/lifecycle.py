@@ -1,9 +1,9 @@
 """Signal lifecycle state machine.
 
 Tracks a published signal's own state over time: PENDING (constructed,
-not yet sent) -> PUBLISHED (sent to Telegram) -> one of EXPIRED,
-INVALIDATED, or FILLED_ADVISORY (a human reported acting on it, purely
-informational since this bot never observes real fills).
+not yet sent) -> PUBLISHED (Telegram accepted) -> an optional entry-window
+state -> one of EXPIRED, INVALIDATED, or FILLED_ADVISORY (a human reported
+acting on it, purely informational since this bot never observes real fills).
 
 This is distinct from `danger.py`, which tracks whether a published
 signal's underlying thesis has been invalidated by subsequent market
@@ -20,6 +20,8 @@ from enum import Enum
 class SignalLifecycleState(str, Enum):
     PENDING = "PENDING"
     PUBLISHED = "PUBLISHED"
+    ENTRY_WINDOW_OPEN = "ENTRY_WINDOW_OPEN"
+    ENTRY_WINDOW_EXPIRED = "ENTRY_WINDOW_EXPIRED"
     EXPIRED = "EXPIRED"
     INVALIDATED = "INVALIDATED"
     FILLED_ADVISORY = "FILLED_ADVISORY"
@@ -28,6 +30,19 @@ class SignalLifecycleState(str, Enum):
 _VALID_TRANSITIONS: dict[SignalLifecycleState, set[SignalLifecycleState]] = {
     SignalLifecycleState.PENDING: {SignalLifecycleState.PUBLISHED, SignalLifecycleState.INVALIDATED},
     SignalLifecycleState.PUBLISHED: {
+        SignalLifecycleState.ENTRY_WINDOW_OPEN,
+        SignalLifecycleState.ENTRY_WINDOW_EXPIRED,
+        SignalLifecycleState.EXPIRED,
+        SignalLifecycleState.INVALIDATED,
+        SignalLifecycleState.FILLED_ADVISORY,
+    },
+    SignalLifecycleState.ENTRY_WINDOW_OPEN: {
+        SignalLifecycleState.ENTRY_WINDOW_EXPIRED,
+        SignalLifecycleState.EXPIRED,
+        SignalLifecycleState.INVALIDATED,
+        SignalLifecycleState.FILLED_ADVISORY,
+    },
+    SignalLifecycleState.ENTRY_WINDOW_EXPIRED: {
         SignalLifecycleState.EXPIRED,
         SignalLifecycleState.INVALIDATED,
         SignalLifecycleState.FILLED_ADVISORY,

@@ -28,6 +28,7 @@ import httpx
 
 from app.core.errors import TelegramDeliveryError, TelegramRateLimitError
 from app.core.logging import get_logger
+from app.monitoring.diagnostics import funnel as diagnostic_funnel
 from app.signals.models import Signal
 from app.telegram.formatter import DeliveryContext, FormatterError, format_signal_message
 from app.telegram.queue import TelegramQueue
@@ -40,6 +41,9 @@ TELEGRAM_API_BASE = "https://api.telegram.org"
 class SendOutcome(str, Enum):
     SENT = "SENT"
     REFUSED_BY_FORMATTER = "REFUSED_BY_FORMATTER"
+    QUEUE_REFUSED = "QUEUE_REFUSED"
+    TELEGRAM_REJECTED = "TELEGRAM_REJECTED"
+    MALFORMED_RESPONSE = "MALFORMED_RESPONSE"
     DELIVERY_FAILED = "DELIVERY_FAILED"
     PRECONDITION_FAILED = "PRECONDITION_FAILED"
 
@@ -48,6 +52,18 @@ class SendOutcome(str, Enum):
 class SendResult:
     outcome: SendOutcome
     detail: str | None = None
+    dry_run: bool | None = None
+    http_status: int | None = None
+    telegram_ok: bool | None = None
+    message_id: str | None = None
+
+
+@dataclass(frozen=True)
+class DeliveryReceipt:
+    dry_run: bool
+    http_status: int | None = None
+    telegram_ok: bool | None = None
+    message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +71,24 @@ class TelegramCredentials:
     bot_token: str
     chat_id: str
     dry_run: bool
+
+
+class TelegramApiRejected(TelegramDeliveryError):
+    """Telegram returned HTTP 200 but its Bot API payload had ok=false."""
+
+
+class TelegramMalformedResponse(TelegramDeliveryError):
+    """Telegram returned an unusable success response payload."""
+
+
+class TelegramQueueRefused(TelegramDeliveryError):
+    """The local rate gate refused to hand the message to the network."""
+
+
+class TelegramHttpError(TelegramDeliveryError):
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
 
 
 class TelegramSender:
@@ -106,9 +140,50 @@ class TelegramSender:
             return SendResult(outcome=SendOutcome.REFUSED_BY_FORMATTER, detail=str(exc))
 
         try:
-            await self._deliver(message)
-            return SendResult(outcome=SendOutcome.SENT)
+            diagnostic_funnel(stage="TELEGRAM_ATTEMPTED", strategy=signal.strategy_source,
+                              symbol=signal.symbol, direction=signal.direction,
+                              reason_code="delivery_attempted", created_ts_ms=signal.created_ts_ms,
+                              confidence=signal.confidence)
+            receipt = await self._deliver(message)
+            diagnostic_funnel(stage="TELEGRAM_OK", strategy=signal.strategy_source,
+                              symbol=signal.symbol, direction=signal.direction,
+                              reason_code="delivery_accepted", created_ts_ms=signal.created_ts_ms,
+                              confidence=signal.confidence)
+            return SendResult(outcome=SendOutcome.SENT, dry_run=receipt.dry_run,
+                              http_status=receipt.http_status, telegram_ok=receipt.telegram_ok,
+                              message_id=receipt.message_id)
+        except TelegramQueueRefused as exc:
+            diagnostic_funnel(stage="TELEGRAM_FAILED", strategy=signal.strategy_source,
+                              symbol=signal.symbol, direction=signal.direction,
+                              reason_code="queue_refused", created_ts_ms=signal.created_ts_ms,
+                              confidence=signal.confidence)
+            return SendResult(outcome=SendOutcome.QUEUE_REFUSED, detail=str(exc))
+        except TelegramApiRejected as exc:
+            diagnostic_funnel(stage="TELEGRAM_FAILED", strategy=signal.strategy_source,
+                              symbol=signal.symbol, direction=signal.direction,
+                              reason_code="telegram_api_rejected", created_ts_ms=signal.created_ts_ms,
+                              confidence=signal.confidence)
+            return SendResult(outcome=SendOutcome.TELEGRAM_REJECTED, detail=str(exc),
+                              http_status=200, telegram_ok=False)
+        except TelegramMalformedResponse as exc:
+            diagnostic_funnel(stage="TELEGRAM_FAILED", strategy=signal.strategy_source,
+                              symbol=signal.symbol, direction=signal.direction,
+                              reason_code="malformed_response", created_ts_ms=signal.created_ts_ms,
+                              confidence=signal.confidence)
+            return SendResult(outcome=SendOutcome.MALFORMED_RESPONSE, detail=str(exc),
+                              http_status=200, telegram_ok=None)
+        except TelegramHttpError as exc:
+            diagnostic_funnel(stage="TELEGRAM_FAILED", strategy=signal.strategy_source,
+                              symbol=signal.symbol, direction=signal.direction,
+                              reason_code="http_failure", created_ts_ms=signal.created_ts_ms,
+                              confidence=signal.confidence)
+            return SendResult(outcome=SendOutcome.DELIVERY_FAILED, detail=str(exc),
+                              http_status=exc.status_code)
         except Exception as exc:  # noqa: BLE001 - the hard guarantee: never propagate
+            diagnostic_funnel(stage="TELEGRAM_FAILED", strategy=signal.strategy_source,
+                              symbol=signal.symbol, direction=signal.direction,
+                              reason_code="delivery_failed", created_ts_ms=signal.created_ts_ms,
+                              confidence=signal.confidence)
             logger.error(
                 "telegram delivery failed; market-data engine unaffected",
                 extra={"context": {"signal_id": signal.signal_id, "error": str(exc)}},
@@ -127,13 +202,16 @@ class TelegramSender:
         except Exception as exc:  # noqa: BLE001 - notification failure must not stop the bot
             return SendResult(outcome=SendOutcome.DELIVERY_FAILED, detail=str(exc))
 
-    async def _deliver(self, message: str, *, chat_id: str | None = None) -> None:
+    async def _deliver(self, message: str, *, chat_id: str | None = None) -> DeliveryReceipt:
         if self._credentials.dry_run:
             logger.info("dry-run: would send telegram message", extra={"context": {"chars": len(message)}})
-            return
+            return DeliveryReceipt(dry_run=True)
 
         destination = str(chat_id or self._credentials.chat_id)
-        await self._queue.acquire_send_slot(destination)
+        try:
+            await self._queue.acquire_send_slot(destination)
+        except Exception as exc:  # noqa: BLE001 - local refusal must be distinguishable
+            raise TelegramQueueRefused(f"telegram queue refused delivery: {exc}") from exc
 
         url = f"{TELEGRAM_API_BASE}/bot{self._credentials.bot_token}/sendMessage"
         payload = {"chat_id": destination, "text": message, "parse_mode": "Markdown"}
@@ -161,6 +239,17 @@ class TelegramSender:
                 continue
 
             if resp.status_code != 200:
-                raise TelegramDeliveryError(f"telegram API returned status {resp.status_code}: {resp.text}")
-
-            return
+                raise TelegramHttpError(resp.status_code,
+                                        f"telegram API returned status {resp.status_code}: {resp.text}")
+            try:
+                payload = resp.json()
+            except (TypeError, ValueError) as exc:
+                raise TelegramMalformedResponse("telegram API returned non-JSON response") from exc
+            if not isinstance(payload, dict) or payload.get("ok") is not True:
+                description = payload.get("description") if isinstance(payload, dict) else None
+                raise TelegramApiRejected(f"telegram API rejected message: {description or 'ok=false'}")
+            result = payload.get("result")
+            message_id = result.get("message_id") if isinstance(result, dict) else None
+            return DeliveryReceipt(dry_run=False, http_status=resp.status_code,
+                                   telegram_ok=True,
+                                   message_id=None if message_id is None else str(message_id))

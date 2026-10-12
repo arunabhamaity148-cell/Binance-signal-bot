@@ -414,7 +414,7 @@ class SignalBot:
         self.sender=sender; self.telegram_queue=None; self.cache=None; self.symbols=[]
         self.news_engine=None; self.news_collector=None; self.news_sources=[]; self.news_task=None
         self.error_notifier=None; self.report_task=None; self.hourly_summary_task=None; self.command_task=None
-        self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
+        self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None; self.lifecycle_task=None
         self.delta_client=None; self.delta_products={}; self.delta_task=None
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock(); self._candidate_dedup=CandidateDeduplicator()
         self._cycle_candidates=0; self._cycle_signals=0
@@ -691,9 +691,33 @@ class SignalBot:
                                     reason_code="telegram_delivery_attempted", created_ts_ms=signal.created_ts_ms,
                                     confidence=signal.confidence)
                 result=await self.sender.send_signal_message(signal,ctx)
-                if result.outcome==SendOutcome.SENT:
-                    await self.repo.update_lifecycle_state(signal.signal_id,"PENDING","PUBLISHED",now_ms(),"queued to Telegram (dry-run or delivery accepted)")
-                else: logger.warning("signal remains PENDING after Telegram refusal/failure",extra={"context":{"signal_id":signal.signal_id,"outcome":result.outcome.value,"detail":result.detail}})
+                record_delivery = getattr(self.repo, "record_telegram_delivery", None)
+                if callable(record_delivery):
+                    await record_delivery(
+                        signal_id=signal.signal_id, attempted_ts_ms=now_ms(),
+                        outcome=result.outcome.value, dry_run=bool(result.dry_run),
+                        http_status=result.http_status, telegram_ok=result.telegram_ok,
+                        message_id=result.message_id, detail=result.detail,
+                    )
+                api_accepted = result.outcome == SendOutcome.SENT and (
+                    result.dry_run is None or (result.dry_run is False and result.telegram_ok is True)
+                )
+                if api_accepted:
+                    self._record_funnel(stage="TELEGRAM_OK", strategy=signal.strategy_source,
+                                        symbol=signal.symbol, direction=signal.direction,
+                                        reason_code="telegram_ok", created_ts_ms=signal.created_ts_ms,
+                                        confidence=signal.confidence)
+                    reason = "Telegram API ok=true" if result.telegram_ok is True else "delivery accepted by compatible sender"
+                    await self.repo.update_lifecycle_state(signal.signal_id,"PENDING","PUBLISHED",now_ms(),reason)
+                elif result.outcome == SendOutcome.SENT and result.dry_run:
+                    logger.info("dry-run Telegram delivery recorded; signal remains PENDING",
+                                extra={"context":{"signal_id":signal.signal_id,"outcome":result.outcome.value}})
+                else:
+                    self._record_funnel(stage="TELEGRAM_FAILED", strategy=signal.strategy_source,
+                                        symbol=signal.symbol, direction=signal.direction,
+                                        reason_code="telegram_failed", created_ts_ms=signal.created_ts_ms,
+                                        confidence=signal.confidence)
+                    logger.warning("signal remains PENDING after Telegram refusal/failure",extra={"context":{"signal_id":signal.signal_id,"outcome":result.outcome.value,"detail":result.detail}})
             except Exception:
                 logger.exception("telegram outbox item failed")
             finally: self.outbox.task_done()
@@ -715,6 +739,17 @@ class SignalBot:
                 logger.info("deriv_refresh_completed",extra={"context":{"cycle":cycle,"succeeded":True,"failed":False}})
             except Exception:
                 logger.exception("deriv_refresh_completed",extra={"context":{"cycle":cycle,"succeeded":False,"failed":True}})
+            try: await asyncio.wait_for(self.stop_event.wait(), timeout=interval_s)
+            except asyncio.TimeoutError: pass
+
+    async def _lifecycle_expiry_loop(self, interval_s: float = 30.0):
+        while not self.stop_event.is_set():
+            try:
+                advance = getattr(self.repo, "advance_expiry", None)
+                if callable(advance):
+                    await advance(now_ts_ms=now_ms())
+            except Exception:
+                logger.exception("signal lifecycle expiry maintenance failed")
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=interval_s)
             except asyncio.TimeoutError: pass
 
@@ -948,6 +983,7 @@ class SignalBot:
     async def run(self,stop_event=None):
         self.stop_event=stop_event or self.stop_event or asyncio.Event()
         self.outbox_task=asyncio.create_task(self._publisher_loop(),name="telegram-outbox")
+        self.lifecycle_task=asyncio.create_task(self._lifecycle_expiry_loop(),name="signal-lifecycle-expiry")
         self.oi_task=asyncio.create_task(self._refresh_oi_loop(),name="live-oi-poller")
         self.derivatives_task=asyncio.create_task(self._refresh_derivatives_history_loop(),name="historical-derivatives-refresh")
         if self.delta_client is not None:
@@ -995,9 +1031,9 @@ class SignalBot:
             if self._closed: return
             self._closed=True
             if self.stop_event: self.stop_event.set()
-            for task in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None):
+            for task in (self.news_task,self.oi_task,self.derivatives_task,self.lifecycle_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None):
                 if task and not task.done(): task.cancel()
-            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
+            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.lifecycle_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
             if self.outbox_task and not self.outbox_task.done():
                 await self.outbox.join(); self.outbox.put_nowait(_STOP); await self.outbox.join(); await self.outbox_task
             if self.error_notifier is not None:

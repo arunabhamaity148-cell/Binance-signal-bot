@@ -130,7 +130,7 @@ async def test_derived_risk_queries_and_manual_outcome_ledger(tmp_path):
         assert row==("manual","operator recorded")
         async with repo._conn.execute("SELECT MAX(version) FROM schema_migrations") as cur:
             version=(await cur.fetchone())[0]
-        assert version==3
+        assert version==4
     finally: await repo.close()
 
 

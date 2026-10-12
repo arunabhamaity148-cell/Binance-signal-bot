@@ -13,8 +13,8 @@ async def test_migrations_are_idempotent(tmp_path):
     conn = await aiosqlite.connect(db)
     try:
         assert await get_current_version(conn) == 0
-        assert await apply_migrations(conn, now_ms=1000) == 3
-        assert await apply_migrations(conn, now_ms=2000) == 3
+        assert await apply_migrations(conn, now_ms=1000) == 4
+        assert await apply_migrations(conn, now_ms=2000) == 4
     finally:
         await conn.close()
 

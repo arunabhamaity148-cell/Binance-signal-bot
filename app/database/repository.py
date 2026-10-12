@@ -25,7 +25,7 @@ from app.core.errors import DatabaseWriteError, MigrationError
 from app.core.time_utils import now_ms
 from app.database.migrations import apply_migrations
 from app.database.models import CandidateAuditRow, LifecycleEventRow, SignalRow
-from app.signals.lifecycle import SignalLifecycleState
+from app.signals.lifecycle import SignalLifecycleState, transition
 from app.signals.models import Signal
 
 
@@ -106,6 +106,14 @@ class SignalRepository:
                     row.meta_json, row.lifecycle_state,
                 ),
             )
+            await conn.execute(
+                "INSERT OR REPLACE INTO signal_timing "
+                "(signal_id, entry_expiry_ts_ms, management_expiry_ts_ms, management_horizon_minutes, "
+                "time_stop_minutes, partial_exit_fractions_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (signal.signal_id, signal.entry_expiry_ts_ms, signal.expiry_ts_ms,
+                 signal.management_horizon_minutes, signal.time_stop_minutes,
+                 json.dumps(signal.partial_exit_fractions)),
+            )
             await conn.commit()
         except Exception as exc:  # noqa: BLE001
             await conn.rollback()
@@ -116,9 +124,24 @@ class SignalRepository:
     ) -> None:
         conn = self._require_conn()
         try:
+            async with conn.execute(
+                "SELECT lifecycle_state FROM signals WHERE signal_id = ?", (signal_id,)
+            ) as cursor:
+                current_row = await cursor.fetchone()
+            if current_row is None:
+                raise ValueError(f"unknown signal_id: {signal_id}")
+            actual = SignalLifecycleState(str(current_row[0]))
+            expected = SignalLifecycleState(str(from_state))
+            target = SignalLifecycleState(str(to_state))
+            if actual != expected:
+                raise ValueError(f"lifecycle state mismatch: expected {expected.value}, actual {actual.value}")
+            transition(signal_id, expected, target, int(ts_ms), reason)
+        except (ValueError, TypeError) as exc:
+            raise DatabaseWriteError(f"invalid lifecycle transition for {signal_id}: {exc}") from exc
+        try:
             await conn.execute(
-                "UPDATE signals SET lifecycle_state = ? WHERE signal_id = ?",
-                (to_state, signal_id),
+                "UPDATE signals SET lifecycle_state = ? WHERE signal_id = ? AND lifecycle_state = ?",
+                (to_state, signal_id, from_state),
             )
             await conn.execute(
                 "INSERT INTO lifecycle_events (signal_id, from_state, to_state, ts_ms, reason) "
@@ -129,6 +152,85 @@ class SignalRepository:
         except Exception as exc:  # noqa: BLE001
             await conn.rollback()
             raise DatabaseWriteError(f"failed to update lifecycle state for {signal_id}: {exc}") from exc
+
+    async def record_telegram_delivery(
+        self, *, signal_id: str, attempted_ts_ms: int, outcome: str, dry_run: bool,
+        http_status: int | None = None, telegram_ok: bool | None = None,
+        message_id: str | None = None, detail: str | None = None,
+    ) -> None:
+        conn = self._require_conn()
+        if not outcome:
+            raise ValueError("delivery outcome must be non-empty")
+        try:
+            await conn.execute(
+                "INSERT INTO telegram_delivery_events "
+                "(event_id, signal_id, attempted_ts_ms, outcome, dry_run, http_status, telegram_ok, message_id, detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex, signal_id, int(attempted_ts_ms), str(outcome),
+                 1 if dry_run else 0, http_status,
+                 None if telegram_ok is None else (1 if telegram_ok else 0),
+                 message_id, None if detail is None else str(detail)[:4000]),
+            )
+            await conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            await conn.rollback()
+            raise DatabaseWriteError(f"failed to record Telegram delivery for {signal_id}: {exc}") from exc
+
+    async def record_operator_event(
+        self, *, signal_id: str, event_type: str, event_ts_ms: int,
+        price: float | None = None, realized_r: float | None = None,
+        note: str | None = None, provenance: str = "manual",
+    ) -> None:
+        if event_type not in {"FILLED_REPORTED", "CLOSED_REPORTED"}:
+            raise ValueError(f"invalid operator event type: {event_type!r}")
+        if provenance != "manual":
+            raise ValueError("operator event provenance must be 'manual'")
+        conn = self._require_conn()
+        try:
+            await conn.execute(
+                "INSERT INTO operator_signal_events "
+                "(event_id, signal_id, event_type, event_ts_ms, price, realized_r, note, provenance) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex, signal_id, event_type, int(event_ts_ms), price, realized_r,
+                 None if note is None else str(note), provenance),
+            )
+            await conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            await conn.rollback()
+            raise DatabaseWriteError(f"failed to record operator event for {signal_id}: {exc}") from exc
+
+    async def advance_expiry(self, *, now_ts_ms: int | None = None) -> int:
+        """Advance only time-based lifecycle states; never infer fills or closes."""
+        conn = self._require_conn()
+        now = now_ms() if now_ts_ms is None else int(now_ts_ms)
+        async with conn.execute(
+            "SELECT s.signal_id, s.lifecycle_state, s.expiry_ts_ms, t.entry_expiry_ts_ms, "
+            "COALESCE(t.management_expiry_ts_ms, s.expiry_ts_ms) "
+            "FROM signals s LEFT JOIN signal_timing t ON t.signal_id = s.signal_id "
+            "WHERE s.lifecycle_state IN (?, ?, ?)",
+            (SignalLifecycleState.PUBLISHED.value, SignalLifecycleState.ENTRY_WINDOW_OPEN.value,
+             SignalLifecycleState.ENTRY_WINDOW_EXPIRED.value),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        advanced = 0
+        for signal_id, state, _legacy_expiry, entry_expiry, management_expiry in rows:
+            current = SignalLifecycleState(str(state))
+            if now >= int(management_expiry):
+                await self.update_lifecycle_state(signal_id, current.value, SignalLifecycleState.EXPIRED.value,
+                                                  now, "management_horizon_expired")
+                advanced += 1
+            elif current == SignalLifecycleState.PUBLISHED and entry_expiry is not None:
+                target = (SignalLifecycleState.ENTRY_WINDOW_EXPIRED
+                          if now >= int(entry_expiry) else SignalLifecycleState.ENTRY_WINDOW_OPEN)
+                await self.update_lifecycle_state(signal_id, current.value, target.value, now,
+                                                  "entry_window_expired" if target == SignalLifecycleState.ENTRY_WINDOW_EXPIRED else "entry_window_open")
+                advanced += 1
+            elif current == SignalLifecycleState.ENTRY_WINDOW_OPEN and entry_expiry is not None and now >= int(entry_expiry):
+                await self.update_lifecycle_state(signal_id, current.value,
+                                                  SignalLifecycleState.ENTRY_WINDOW_EXPIRED.value,
+                                                  now, "entry_window_expired")
+                advanced += 1
+        return advanced
 
     async def insert_candidate_audit(
         self,
@@ -164,8 +266,8 @@ class SignalRepository:
             "strategy_source, entry_low, entry_high, stop_loss, tp1, tp2, tp3, tp4, "
             "rr_tp2, expiry_ts_ms, why_lines_json, veto_state, veto_reason, "
             "advisory_warning, size_units_advisory, notional_usd_advisory, meta_json, "
-            "lifecycle_state FROM signals WHERE lifecycle_state = ?",
-            (SignalLifecycleState.PUBLISHED.value,),
+            "lifecycle_state FROM signals WHERE lifecycle_state IN (?, ?)",
+            (SignalLifecycleState.PUBLISHED.value, SignalLifecycleState.ENTRY_WINDOW_OPEN.value),
         ) as cursor:
             rows = await cursor.fetchall()
         return [self._row_to_signal_row(r) for r in rows]
@@ -204,8 +306,8 @@ class SignalRepository:
         now = now_ms() if now_ts_ms is None else int(now_ts_ms)
         conn = self._require_conn()
         async with conn.execute(
-            "SELECT COUNT(*) FROM signals WHERE lifecycle_state = ? AND expiry_ts_ms > ?",
-            (SignalLifecycleState.PUBLISHED.value, now),
+            "SELECT COUNT(*) FROM signals WHERE lifecycle_state IN (?, ?) AND expiry_ts_ms > ?",
+            (SignalLifecycleState.PUBLISHED.value, SignalLifecycleState.ENTRY_WINDOW_OPEN.value, now),
         ) as cursor:
             row = await cursor.fetchone()
         return int(row[0] if row else 0)
@@ -231,8 +333,8 @@ class SignalRepository:
         placeholders = ",".join("?" for _ in cluster_symbols)
         conn = self._require_conn()
         async with conn.execute(
-            f"SELECT COUNT(*) FROM signals WHERE lifecycle_state = ? AND expiry_ts_ms > ? AND symbol IN ({placeholders})",
-            (SignalLifecycleState.PUBLISHED.value, now, *cluster_symbols),
+            f"SELECT COUNT(*) FROM signals WHERE lifecycle_state IN (?, ?) AND expiry_ts_ms > ? AND symbol IN ({placeholders})",
+            (SignalLifecycleState.PUBLISHED.value, SignalLifecycleState.ENTRY_WINDOW_OPEN.value, now, *cluster_symbols),
         ) as cursor:
             row = await cursor.fetchone()
         return int(row[0] if row else 0)
@@ -398,13 +500,13 @@ class SignalRepository:
             veto_row = await cursor.fetchone()
         now = now_ms() if now_ts_ms is None else int(now_ts_ms)
         async with conn.execute(
-            "SELECT grade, COUNT(*) FROM signals WHERE lifecycle_state=? AND expiry_ts_ms>? GROUP BY grade",
-            (SignalLifecycleState.PUBLISHED.value, now),
+            "SELECT grade, COUNT(*) FROM signals WHERE lifecycle_state IN (?, ?) AND expiry_ts_ms>? GROUP BY grade",
+            (SignalLifecycleState.PUBLISHED.value, SignalLifecycleState.ENTRY_WINDOW_OPEN.value, now),
         ) as cursor:
             open_by_grade = {str(item[0]): int(item[1]) for item in await cursor.fetchall()}
         async with conn.execute(
-            "SELECT COUNT(*) FROM signals WHERE lifecycle_state=? AND expiry_ts_ms>?",
-            (SignalLifecycleState.PUBLISHED.value, now),
+            "SELECT COUNT(*) FROM signals WHERE lifecycle_state IN (?, ?) AND expiry_ts_ms>?",
+            (SignalLifecycleState.PUBLISHED.value, SignalLifecycleState.ENTRY_WINDOW_OPEN.value, now),
         ) as cursor:
             open_row = await cursor.fetchone()
         return {
