@@ -30,10 +30,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from bisect import bisect_right
 
-from app.backtest.costs import CostBreakdown, compute_cost_breakdown
+from app.backtest.costs import CostBreakdown, CostScenario, compute_cost_breakdown
 from app.backtest.fills import (
     PartialExitEvent, PositionState, assess_limit_fill, deterministic_candidate_signal_id,
-    fill_probability_succeeds, process_bar_for_open_position,
+    fill_probability_succeeds, force_close_position, process_bar_for_open_position,
 )
 from app.backtest.metrics import TradeResult
 from app.core.models import (
@@ -59,11 +59,39 @@ class BacktestConfig:
     symbol_tier: str
     min_candles: int
     assumed_latency_s: float = 2.0  # class E, documented backtest assumption (human reaction time)
+    entry_expiry_minutes: float | None = None
+    time_stop_minutes: float | None = None
+    management_horizon_minutes: float | None = None
+    cost_scenario: CostScenario = CostScenario()
+    partial_exit_fractions: tuple[float, float, float, float] | None = None
     regime_label_fn: object = None  # optional Callable[[MarketSnapshot], str], defaults to "default"
 
 
 def _default_regime_label(snapshot: MarketSnapshot) -> str:
     return "default"
+
+
+def _build_trade_result(*, symbol: str, candidate: CandidateSignal, position: PositionState,
+                        realized_r: float, regime_label: str, closed_ts_ms: int,
+                        outcome: str) -> TradeResult:
+    entry_ts = next((event.bar_close_time_ms for event in position.exits if event.exit_kind == "ENTRY"), None)
+    # The engine stores the fill timestamp on the position dynamically to keep
+    # PositionState's existing public constructor backward-compatible.
+    entry_ts = getattr(position, "entry_fill_ts_ms", entry_ts)
+    tp_times = {event.tp_index: event.bar_close_time_ms for event in position.exits if event.exit_kind == "TP"}
+    sl_ts = position.stop_out_bar_close_time_ms
+    return TradeResult(
+        symbol=symbol, strategy_source=candidate.strategy_source,
+        direction=candidate.direction.value, realized_r=realized_r, was_filled=True,
+        mfe_r=_mfe_r(position, candidate), mae_r=_mae_r(position, candidate),
+        regime_label=regime_label, opened_ts_ms=candidate.event_ts_ms,
+        closed_ts_ms=closed_ts_ms,
+        time_to_entry_zone_ms=None if entry_ts is None else entry_ts - candidate.event_ts_ms,
+        time_to_tp1_ms=None if 0 not in tp_times else tp_times[0] - candidate.event_ts_ms,
+        time_to_tp2_ms=None if 1 not in tp_times else tp_times[1] - candidate.event_ts_ms,
+        time_to_sl_ms=None if sl_ts is None else sl_ts - candidate.event_ts_ms,
+        outcome=outcome, reference_path="BINANCE_REFERENCE",
+    )
 
 
 def _build_snapshot_at_index(
@@ -256,6 +284,14 @@ def run_single_symbol_backtest(
     open_positions: list[tuple[PositionState, CandidateSignal, int, CostBreakdown]] = []  # state, candidate, entry bar, signal-time costs
 
     cfg = bt_cfg.app_config
+    risk_cfg = cfg.risk
+    entry_expiry_minutes = bt_cfg.entry_expiry_minutes if bt_cfg.entry_expiry_minutes is not None else risk_cfg.get("entry_expiry_minutes", 30)
+    # Existing reference fixtures historically replayed until TP/SL or data
+    # end. Keep that default stable; Phase 3 callers opt into the configured
+    # operator time stop explicitly via BacktestConfig.
+    time_stop_minutes = bt_cfg.time_stop_minutes
+    management_horizon_minutes = bt_cfg.management_horizon_minutes
+    partial_exit_fractions = tuple(bt_cfg.partial_exit_fractions or risk_cfg["partial_exit_fractions"])
 
     for i in range(min_candles - 1, len(bars_5m)):
         as_of_ts_ms = bars_5m[i].close_time_ms
@@ -268,17 +304,32 @@ def run_single_symbol_backtest(
         for pos, cand, entry_idx, cost in open_positions:
             if i > entry_idx:
                 pos = process_bar_for_open_position(pos, bars_5m[i])
+                time_stop_ts = (bars_5m[entry_idx].close_time_ms + int(time_stop_minutes * 60_000)
+                                if time_stop_minutes is not None else None)
+                management_ts = (bars_5m[entry_idx].close_time_ms + int(management_horizon_minutes * 60_000)
+                                 if management_horizon_minutes is not None else None)
+                if not pos.is_fully_closed:
+                    if time_stop_ts is not None and bars_5m[i].close_time_ms >= time_stop_ts:
+                        force_close_position(pos, price=bars_5m[i].close, bar_close_time_ms=bars_5m[i].close_time_ms,
+                                             exit_kind="TIME_STOP")
+                    elif management_ts is not None and bars_5m[i].close_time_ms >= management_ts:
+                        force_close_position(pos, price=bars_5m[i].close, bar_close_time_ms=bars_5m[i].close_time_ms,
+                                             exit_kind="MANAGEMENT_EXPIRY")
             if pos.is_fully_closed:
                 realized_r = _compute_realized_r(pos, cand) - _costs_in_r(pos, cost, cand)
-                results.append(
-                    TradeResult(
-                        symbol=symbol, strategy_source=cand.strategy_source, direction=cand.direction.value,
-                        realized_r=realized_r, was_filled=True,
-                        mfe_r=_mfe_r(pos, cand), mae_r=_mae_r(pos, cand),
-                        regime_label=regime_fn(None), opened_ts_ms=cand.event_ts_ms,
-                        closed_ts_ms=bars_5m[i].close_time_ms,
-                    )
-                )
+                if pos.stopped_out:
+                    outcome = "STOP_LOSS"
+                elif pos.exits and pos.exits[-1].exit_kind == "TIME_STOP":
+                    outcome = "TIME_STOP"
+                elif pos.exits and pos.exits[-1].exit_kind == "MANAGEMENT_EXPIRY":
+                    outcome = "MANAGEMENT_EXPIRY"
+                else:
+                    outcome = "TP4" if pos.next_tp_index >= 4 else "PARTIAL_TP_CLOSE"
+                results.append(_build_trade_result(
+                    symbol=symbol, candidate=cand, position=pos, realized_r=realized_r,
+                    regime_label=regime_fn(None), closed_ts_ms=bars_5m[i].close_time_ms,
+                    outcome=outcome,
+                ))
             else:
                 still_open.append((pos, cand, entry_idx, cost))
         open_positions = still_open
@@ -324,7 +375,12 @@ def run_single_symbol_backtest(
             # Search FORWARD for a fill, starting at the NEXT bar —
             # this is the structural next-bar-fill boundary: index i
             # (the bar that generated this candidate) is never searched.
-            entry_result = _search_forward_for_fill(bars_5m, start_idx=i + 1, candidate=representative, max_search_bars=20, signal_id=deterministic_candidate_signal_id(representative))
+            entry_expiry_ts_ms = representative.event_ts_ms + int(entry_expiry_minutes * 60_000)
+            entry_result = _search_forward_for_fill(
+                bars_5m, start_idx=i + 1, candidate=representative, max_search_bars=len(bars_5m),
+                expiry_ts_ms=entry_expiry_ts_ms,
+                signal_id=deterministic_candidate_signal_id(representative),
+            )
             if entry_result is None:
                 results.append(
                     TradeResult(
@@ -332,6 +388,7 @@ def run_single_symbol_backtest(
                         direction=representative.direction.value, realized_r=0.0, was_filled=False,
                         mfe_r=0.0, mae_r=0.0, regime_label=regime_fn(None),
                         opened_ts_ms=representative.event_ts_ms, closed_ts_ms=representative.event_ts_ms,
+                        expiry_without_touch=True, outcome="ENTRY_EXPIRY",
                     )
                 )
                 continue
@@ -345,19 +402,35 @@ def run_single_symbol_backtest(
                 fee_maker_bps=snapshot.fee_maker_bps, fee_taker_bps=snapshot.fee_taker_bps,
                 notional_usd=bt_cfg.assumed_equity_usd, depth_usd=depth_usd,
                 latency_s=bt_cfg.assumed_latency_s,
+                spread_bps=bt_cfg.cost_scenario.spread_bps,
+                basis_bps=bt_cfg.cost_scenario.basis_bps,
+                scenario_slippage_bps=bt_cfg.cost_scenario.slippage_bps,
             )
             position = PositionState(
                 direction=representative.direction, entry_price=fill_price, stop_loss=representative.stop_loss,
                 tp_levels=(representative.tp1, representative.tp2, representative.tp3, representative.tp4),
-                partial_exit_fractions=tuple(cfg.risk["partial_exit_fractions"]),
+                partial_exit_fractions=partial_exit_fractions,
             )
+            position.entry_fill_ts_ms = bars_5m[fill_bar_idx].close_time_ms
             open_positions.append((position, representative, fill_bar_idx, cost))
-
+    if bars_5m:
+        final_bar = bars_5m[-1]
+        for pos, cand, _entry_idx, cost in open_positions:
+            if not pos.is_fully_closed:
+                force_close_position(pos, price=final_bar.close, bar_close_time_ms=final_bar.close_time_ms,
+                                     exit_kind="DATA_END")
+            realized_r = _compute_realized_r(pos, cand) - _costs_in_r(pos, cost, cand)
+            results.append(_build_trade_result(
+                symbol=symbol, candidate=cand, position=pos, realized_r=realized_r,
+                regime_label=regime_fn(None), closed_ts_ms=final_bar.close_time_ms,
+                outcome="DATA_END" if pos.exits and pos.exits[-1].exit_kind == "DATA_END" else "CLOSED",
+            ))
     return results
 
 
 def _search_forward_for_fill(
-    bars_5m: list, *, start_idx: int, candidate: CandidateSignal, max_search_bars: int, signal_id: str
+    bars_5m: list, *, start_idx: int, candidate: CandidateSignal, max_search_bars: int,
+    signal_id: str, expiry_ts_ms: int | None = None,
 ) -> tuple[int, float] | None:
     """Starting at `start_idx` (NEVER earlier — this is the next-bar-
     fill enforcement point), search up to `max_search_bars` forward for
@@ -366,6 +439,8 @@ def _search_forward_for_fill(
     search window (the signal expired unfilled)."""
     end_idx = min(len(bars_5m), start_idx + max_search_bars)
     for idx in range(start_idx, end_idx):
+        if expiry_ts_ms is not None and bars_5m[idx].close_time_ms >= expiry_ts_ms:
+            break
         assessment = assess_limit_fill(
             entry_low=candidate.entry_low, entry_high=candidate.entry_high,
             bar=bars_5m[idx], direction=candidate.direction,
@@ -389,9 +464,11 @@ def _costs_in_r(position: PositionState, cost: CostBreakdown, candidate: Candida
     if risk_per_unit <= 0:
         return 0.0
     charged = cost.entry_maker_fee + cost.entry_latency_slippage
-    charged += sum(exit_event.fraction_of_original * cost.tp_maker_fee for exit_event in position.exits)
-    if position.stopped_out:
-        charged += position.remaining_fraction * (cost.sl_taker_fee + cost.sl_leg_slippage)
+    for exit_event in position.exits:
+        if exit_event.exit_kind == "TP":
+            charged += exit_event.fraction_of_original * cost.tp_maker_fee
+        else:
+            charged += exit_event.fraction_of_original * (cost.sl_taker_fee + cost.sl_leg_slippage)
     return charged / risk_per_unit
 
 
@@ -421,7 +498,7 @@ def _compute_realized_r(position: PositionState, candidate: CandidateSignal) -> 
 
 
 def _mfe_r(position: PositionState, candidate: CandidateSignal) -> float:
-    if not position.exits:
+    if position.max_favorable_price is None and not position.exits:
         return 0.0
     if position.direction == Direction.LONG:
         r_unit = position.entry_price - position.stop_loss
@@ -429,13 +506,21 @@ def _mfe_r(position: PositionState, candidate: CandidateSignal) -> float:
         r_unit = position.stop_loss - position.entry_price
     if r_unit <= 0:
         return 0.0
-    best_price = max(e.price for e in position.exits) if position.direction == Direction.LONG else min(e.price for e in position.exits)
+    best_price = position.max_favorable_price
+    if best_price is None:
+        best_price = max(e.price for e in position.exits) if position.direction == Direction.LONG else min(e.price for e in position.exits)
     if position.direction == Direction.LONG:
         return (best_price - position.entry_price) / r_unit
     return (position.entry_price - best_price) / r_unit
 
 
 def _mae_r(position: PositionState, candidate: CandidateSignal) -> float:
-    if position.stopped_out:
-        return -1.0
-    return 0.0
+    if position.max_adverse_price is None:
+        return -1.0 if position.stopped_out else 0.0
+    r_unit = (position.entry_price - position.stop_loss
+              if position.direction == Direction.LONG else position.stop_loss - position.entry_price)
+    if r_unit <= 0:
+        return 0.0
+    if position.direction == Direction.LONG:
+        return (position.max_adverse_price - position.entry_price) / r_unit
+    return (position.entry_price - position.max_adverse_price) / r_unit

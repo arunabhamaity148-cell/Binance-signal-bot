@@ -54,6 +54,19 @@ from app.core.models import Direction
 
 
 @dataclass(frozen=True)
+class CostScenario:
+    """Explicit replay assumptions; never inferred from future bars."""
+    name: str = "baseline"
+    spread_bps: float = 0.0
+    slippage_bps: float = 0.0
+    basis_bps: float = 0.0
+
+    def __post_init__(self) -> None:
+        if any(value < 0 for value in (self.spread_bps, self.slippage_bps, self.basis_bps)):
+            raise ValueError("scenario cost bps must be non-negative")
+
+
+@dataclass(frozen=True)
 class CostBreakdown:
     """Per-unit costs, quote currency (USDT) per 1 unit of base asset.
 
@@ -76,20 +89,22 @@ class CostBreakdown:
     sl_taker_fee: float
     sl_leg_slippage: float
     entry_latency_slippage: float = 0.0
+    spread_cost: float = 0.0
+    basis_cost: float = 0.0
 
     @property
     def round_trip_at_tp(self) -> float:
         """Entry (maker) + TP exit (maker) = 2 x maker, plus any entry
         latency slippage (backtest only; 0.0 on the live path). Used
         for R:R at TP2."""
-        return self.entry_maker_fee + self.tp_maker_fee + self.entry_latency_slippage
+        return self.entry_maker_fee + self.tp_maker_fee + self.entry_latency_slippage + self.spread_cost + self.basis_cost
 
     @property
     def round_trip_at_sl(self) -> float:
         """Entry (maker) + SL exit (taker) + stop-market slippage, plus
         any entry latency slippage. Used for position-sizing risk (what
         the user actually loses)."""
-        return self.entry_maker_fee + self.sl_taker_fee + self.sl_leg_slippage + self.entry_latency_slippage
+        return self.entry_maker_fee + self.sl_taker_fee + self.sl_leg_slippage + self.entry_latency_slippage + self.spread_cost + self.basis_cost
 
 
 def estimate_slippage_bps(notional_usd: float, depth_usd: float | None) -> float:
@@ -133,6 +148,9 @@ def compute_cost_breakdown(
     notional_usd: float,
     depth_usd: float | None,
     latency_s: float = 0.0,
+    spread_bps: float = 0.0,
+    basis_bps: float = 0.0,
+    scenario_slippage_bps: float = 0.0,
 ) -> CostBreakdown:
     """Build the per-unit cost breakdown for one signal.
 
@@ -148,14 +166,16 @@ def compute_cost_breakdown(
     """
     if entry_price <= 0 or stop_price <= 0:
         raise ValueError("entry_price and stop_price must be > 0")
-    if fee_maker_bps < 0 or fee_taker_bps < 0:
-        raise ValueError("fee bps must be >= 0")
+    if fee_maker_bps < 0 or fee_taker_bps < 0 or spread_bps < 0 or basis_bps < 0 or scenario_slippage_bps < 0:
+        raise ValueError("fee and scenario bps must be >= 0")
 
     entry_maker = entry_price * fee_maker_bps / 10_000
     tp_maker = entry_price * fee_maker_bps / 10_000
     sl_taker = stop_price * fee_taker_bps / 10_000
-    slippage = stop_price * estimate_slippage_bps(notional_usd, depth_usd) / 10_000
+    slippage = stop_price * (estimate_slippage_bps(notional_usd, depth_usd) + scenario_slippage_bps) / 10_000
     latency_slippage = entry_price * estimate_latency_slippage_bps(latency_s) / 10_000
+    spread_cost = entry_price * spread_bps / 10_000
+    basis_cost = entry_price * basis_bps / 10_000
 
     return CostBreakdown(
         entry_maker_fee=entry_maker,
@@ -163,6 +183,8 @@ def compute_cost_breakdown(
         sl_taker_fee=sl_taker,
         sl_leg_slippage=slippage,
         entry_latency_slippage=latency_slippage,
+        spread_cost=spread_cost,
+        basis_cost=basis_cost,
     )
 
 
