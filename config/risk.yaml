@@ -13,6 +13,8 @@ partial_exit_fractions: [0.40, 0.30, 0.20, 0.10]   # class: E, per spec section 
 entry_expiry_minutes: 30                    # class: F
 management_horizon_minutes: 120              # class: F
 time_stop_minutes: 60                        # class: F, operator review after entry
+# Phase 4 rollout: shadow records proposed levels but keeps legacy Telegram levels.
+structure_aware_tpsl_mode: shadow             # off | shadow | enabled
 
 # Reporting assumptions only; these do not override the engine's risk_per_trade_pct.
 paper_trading_assumptions:

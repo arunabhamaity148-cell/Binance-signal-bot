@@ -951,7 +951,8 @@ class SignalBot:
                 entry_expiry_minutes=self.cfg.risk.get("entry_expiry_minutes", 30),
                 management_horizon_minutes=self.cfg.risk.get("management_horizon_minutes"),
                 time_stop_minutes=self.cfg.risk.get("time_stop_minutes", 60),
-                partial_exit_fractions=tuple(self.cfg.risk.get("partial_exit_fractions", [0.40, 0.30, 0.20, 0.10])))
+                partial_exit_fractions=tuple(self.cfg.risk.get("partial_exit_fractions", [0.40, 0.30, 0.20, 0.10])),
+                structure_aware_tpsl_mode=self.cfg.risk.get("structure_aware_tpsl_mode", "off"))
             signal=self._populate_delta_fields(signal)
             if signal.veto_state!="PASS":
                 for item in group:

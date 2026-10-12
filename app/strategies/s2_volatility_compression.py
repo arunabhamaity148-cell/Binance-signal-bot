@@ -139,7 +139,7 @@ class S2VolatilityCompression(StrategyBase):
         candidates: list[CandidateSignal] = []
 
         long_candidate = self._evaluate_long(
-            snapshot=snapshot, cfg=cfg, atr14=atr14, range_high=range_high,
+            snapshot=snapshot, cfg=cfg, atr14=atr14, range_high=range_high, range_low=range_low,
             current=current, body=body, volume_confirm_ratio=volume_confirm_ratio,
             oi_delta_pct=oi_delta_pct, range_width_atr=range_width_atr, atr_percentile=atr_percentile,
         )
@@ -157,7 +157,7 @@ class S2VolatilityCompression(StrategyBase):
         return self.finalize_candidates(candidates, snapshot, config)
 
     def _evaluate_long(
-        self, *, snapshot, cfg, atr14, range_high, current, body, volume_confirm_ratio,
+        self, *, snapshot, cfg, atr14, range_high, range_low=None, current, body, volume_confirm_ratio,
         oi_delta_pct, range_width_atr, atr_percentile,
     ) -> CandidateSignal | None:
         if not (body > cfg["expansion_atr_mult"] * atr14):
@@ -201,6 +201,7 @@ class S2VolatilityCompression(StrategyBase):
             "snapshot_version": snapshot.snapshot_version,
             "event_ts_ms": current.close_time_ms,
             "range_high": range_high,
+            "range_low": range_low,
             "range_width_atr": range_width_atr,
             "atr_percentile": atr_percentile,
             "volume_confirm_ratio": volume_confirm_ratio,
