@@ -8,6 +8,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 _LEVELS = {"off", "summary", "verbose"}
+FUNNEL_STAGES = frozenset({
+    "EVALUATED", "PREREQUISITE_REJECTED", "REGIME_REJECTED", "SETUP_ARMED",
+    "SETUP_INVALIDATED", "TRIGGER_MISSED", "TRIGGER_CONFIRMED", "CANDIDATE_CREATED",
+    "FINALIZE_REJECTED", "DEDUPLICATED", "CONSENSUS_REJECTED", "VETO_BLOCKED",
+    "PERSISTED", "QUEUE_ACCEPTED", "TELEGRAM_ATTEMPTED", "TELEGRAM_OK",
+    "TELEGRAM_FAILED",
+})
 _level = "summary"
 
 
@@ -57,8 +64,42 @@ def _reason_token(reason: str) -> str:
     return "strategy_prerequisite_failed"
 
 
+def funnel(*, stage: str, strategy: str | None = None, symbol: str | None = None,
+           direction: str | None = None, reason_code: str = "unspecified",
+           created_ts_ms: int | None = None, input_age_ms: int | None = None,
+           regime: str | None = None, confidence: float | None = None,
+           veto_name: str | None = None, threshold: Any = None,
+           values: dict[str, Any] | None = None) -> None:
+    """Emit one bounded-schema funnel event with stable stage/reason fields."""
+    stage = str(stage).upper()
+    if stage not in FUNNEL_STAGES:
+        raise ValueError(f"unknown funnel stage: {stage!r}")
+    payload: dict[str, Any] = {
+        "strategy": strategy, "symbol": symbol, "direction": direction,
+        "stage": stage, "reason_code": _reason_token(reason_code),
+        "input_age_ms": input_age_ms, "regime": regime, "confidence": confidence,
+        "veto_name": veto_name, "threshold": threshold, "created_ts_ms": created_ts_ms,
+    }
+    if values:
+        payload["values"] = values
+    _emit("funnel", payload)
+
+
 def strategy(symbol: str, strategy_name: str, decision: str, reason: str, values: dict[str, Any] | None = None) -> None:
-    _emit("diag_strategy", {"symbol": symbol, "strategy": strategy_name, "decision": decision, "reason": _reason_token(reason), **({"values": values} if values else {})}, verbose_only=False)
+    normalized = str(decision).lower()
+    if normalized in {"skipped", "regime_rejected"}:
+        stage = "REGIME_REJECTED"
+    elif normalized in {"candidate", "triggered"}:
+        stage = "TRIGGER_CONFIRMED"
+    elif normalized in {"rejected", "none"}:
+        stage = "PREREQUISITE_REJECTED"
+    else:
+        stage = None
+    payload = {"symbol": symbol, "strategy": strategy_name, "decision": decision,
+               "reason": _reason_token(reason), "reason_code": _reason_token(reason),
+               **({"funnel_stage": stage} if stage else {}),
+               **({"values": values} if values else {})}
+    _emit("diag_strategy", payload, verbose_only=False)
 
 
 def veto(symbol: str, guard: str, decision: str, reason: str | None, values: dict[str, Any] | None = None) -> None:

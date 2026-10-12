@@ -48,6 +48,7 @@ from app.data.snapshot import SnapshotInputs, build_snapshot
 from app.risk.consensus import assign_grade, compute_effective_votes
 from app.risk.veto_engine import run_veto_engine
 from app.strategies.registry import all_strategies
+from app.monitoring.diagnostics import funnel as diagnostic_funnel
 from app.monitoring.diagnostics import strategy as diagnostic_strategy
 
 
@@ -138,6 +139,10 @@ def generate_candidates_at_snapshot(
     strategy logic of its own."""
     candidates: list[CandidateSignal] = []
     for strategy in all_strategies():
+        diagnostic_funnel(stage="EVALUATED", strategy=strategy.strategy_id,
+                          symbol=getattr(snapshot, "symbol", None),
+                          created_ts_ms=getattr(snapshot, "as_of_ts_ms", None),
+                          regime=getattr(regime, "value", regime))
         # Registry IDs map explicitly to YAML sections; this fallback keeps
         # third-party/test strategies compatible with the old dispatcher.
         section_names = {
@@ -148,11 +153,22 @@ def generate_candidates_at_snapshot(
         allowed = section.get("allowed_regimes")
         regime_name = getattr(regime, "value", regime)
         if regime_name is not None and regime_name not in (allowed or ()):
+            diagnostic_funnel(stage="REGIME_REJECTED", strategy=strategy.strategy_id,
+                              symbol=getattr(snapshot, "symbol", None),
+                              reason_code="regime_not_allowed",
+                              created_ts_ms=getattr(snapshot, "as_of_ts_ms", None),
+                              regime=regime_name)
             diagnostic_strategy(getattr(snapshot, "symbol", "UNKNOWN"), strategy.strategy_id, "skipped", "regime_not_allowed", {"regime": regime_name})
             if regime_logger is not None:
                 regime_logger(strategy.strategy_id, regime_name)
             continue
-        candidates.extend(strategy.evaluate(snapshot, news_state, strategy_cfg))
+        produced = strategy.evaluate(snapshot, news_state, strategy_cfg)
+        for candidate in produced:
+            diagnostic_funnel(stage="CANDIDATE_CREATED", strategy=candidate.strategy_source,
+                              symbol=candidate.symbol, direction=candidate.direction.value,
+                              reason_code="strategy_candidate", created_ts_ms=candidate.event_ts_ms,
+                              confidence=candidate.confidence)
+        candidates.extend(produced)
     return candidates
 
 

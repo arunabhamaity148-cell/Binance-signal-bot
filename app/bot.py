@@ -33,7 +33,9 @@ from app.news.engine import NewsEngine, run_collection_cycle
 from app.risk.risk_engine import (CandidateDeduplicator, DailyCounters, OpenSignalRecord, RiskState,
     apply_min_rr_gate, check_risk_limits, combined_sizing_multiplier, compute_position_size)
 from app.risk.veto_engine import run_veto_engine
+from app.monitoring.diagnostics import funnel as diagnostic_funnel
 from app.monitoring.diagnostics import strategy as diagnostic_strategy
+from app.monitoring.metrics import RuntimeMetrics
 from app.risk.btc_regime import compute_btc_trend_direction
 from app.risk.regime_detector import MarketRegime, detect_regime
 from app.signals.signal_engine import build_final_signal
@@ -419,6 +421,18 @@ class SignalBot:
         self._boot_started_monotonic=time.monotonic(); self._snapshot_diagnostics={}
         self._unknown_regime_since: dict[str, float] = {}
         self._unknown_regime_error_logged: set[str] = set()
+        self.runtime_metrics = RuntimeMetrics()
+
+    def _record_funnel(self, *, stage: str, strategy: str | None = None,
+                       symbol: str | None = None, direction: str | None = None,
+                       reason_code: str = "unspecified", created_ts_ms: int | None = None,
+                       regime: str | None = None, confidence: float | None = None,
+                       veto_name: str | None = None, threshold=None, values=None) -> None:
+        self.runtime_metrics.record_funnel(stage=stage, strategy=strategy, reason_code=reason_code)
+        diagnostic_funnel(stage=stage, strategy=strategy, symbol=symbol, direction=direction,
+                          reason_code=reason_code, created_ts_ms=created_ts_ms, regime=regime,
+                          confidence=confidence, veto_name=veto_name, threshold=threshold,
+                          values=values)
 
     def _track_regime_status(self, symbol: str, regime: MarketRegime) -> float | None:
         """Track continuous UNKNOWN duration and surface persistent failures."""
@@ -672,6 +686,10 @@ class SignalBot:
             try:
                 if item is _STOP: return
                 signal,ctx=item
+                self._record_funnel(stage="TELEGRAM_ATTEMPTED", strategy=signal.strategy_source,
+                                    symbol=signal.symbol, direction=signal.direction,
+                                    reason_code="telegram_delivery_attempted", created_ts_ms=signal.created_ts_ms,
+                                    confidence=signal.confidence)
                 result=await self.sender.send_signal_message(signal,ctx)
                 if result.outcome==SendOutcome.SENT:
                     await self.repo.update_lifecycle_state(signal.signal_id,"PENDING","PUBLISHED",now_ms(),"queued to Telegram (dry-run or delivery accepted)")
@@ -797,8 +815,16 @@ class SignalBot:
                         "ts_ms": int(snapshot.as_of_ts_ms),
                     }},
                 )
-        candidates=[c for c in pending_candidates if not self._candidate_dedup.should_suppress(
-            c, now_ts_ms=snapshot.as_of_ts_ms, cooldown_min=self.cfg.risk["cooldown_min"])]
+        candidates=[]
+        for c in pending_candidates:
+            if self._candidate_dedup.should_suppress(
+                c, now_ts_ms=snapshot.as_of_ts_ms, cooldown_min=self.cfg.risk["cooldown_min"]):
+                self._record_funnel(stage="DEDUPLICATED", strategy=c.strategy_source,
+                                    symbol=c.symbol, direction=c.direction.value,
+                                    reason_code="duplicate_candidate", created_ts_ms=snapshot.as_of_ts_ms,
+                                    confidence=c.confidence)
+                continue
+            candidates.append(c)
         counts=Counter(c.strategy_source for c in candidates)
         log_symbol=getattr(snapshot,"symbol",None) or (candidates[0].symbol if candidates else "UNKNOWN")
         for strategy_name in ("S1", "S2", "S3", "S4", "S5"):
@@ -810,6 +836,10 @@ class SignalBot:
         for c in candidates:
             await self.repo.insert_candidate_audit(symbol=c.symbol,strategy_source=c.strategy_source,direction=c.direction.value,
                 confidence=c.confidence,event_ts_ms=c.event_ts_ms,snapshot_version=snapshot.snapshot_version,meta=c.meta)
+            self._record_funnel(stage="CANDIDATE_CREATED", strategy=c.strategy_source,
+                                symbol=c.symbol, direction=c.direction.value,
+                                reason_code="candidate_created", created_ts_ms=c.event_ts_ms,
+                                confidence=c.confidence)
             self._log_candidate(c,grade="UNASSESSED",veto="NOT_RUN",reason="created",stage="created")
             logger.info(
                 "candidate_created",
@@ -827,6 +857,10 @@ class SignalBot:
             grade_label=getattr(grade,"value",grade) if grade is not None else "NONE"
             if grade is None:
                 for item in group:
+                    self._record_funnel(stage="CONSENSUS_REJECTED", strategy=item.strategy_source,
+                                        symbol=item.symbol, direction=item.direction.value,
+                                        reason_code="no_grade_threshold_met", created_ts_ms=item.event_ts_ms,
+                                        confidence=item.confidence)
                     self._log_candidate(item,grade=grade_label,veto="NOT_RUN",reason="consensus_grade_missing",stage="rejected")
                 continue
             candidate=group[0]
@@ -837,6 +871,10 @@ class SignalBot:
                 reason=veto.veto_reason or "; ".join(r.reason or r.guard_name for r in veto.guard_results
                     if not r.passed and r.action==GuardAction.BLOCK) or "veto_blocked"
                 for item in group:
+                    self._record_funnel(stage="VETO_BLOCKED", strategy=item.strategy_source,
+                                        symbol=item.symbol, direction=item.direction.value,
+                                        reason_code="veto_blocked", created_ts_ms=snapshot.as_of_ts_ms,
+                                        confidence=item.confidence, veto_name=reason.split(":", 1)[0])
                     self._log_candidate(item,grade=grade_label,veto="BLOCK",reason=reason,stage="rejected")
                 for result in veto.guard_results:
                     if not result.passed and result.action == GuardAction.BLOCK:
@@ -890,11 +928,20 @@ class SignalBot:
                 continue
             await self.repo.insert_signal(signal)
             self._cycle_signals+=1
+            self.runtime_metrics.record_signal(grade=grade_label, strategy=candidate.strategy_source, symbol=symbol)
             for item in group:
+                self._record_funnel(stage="PERSISTED", strategy=item.strategy_source,
+                                    symbol=item.symbol, direction=item.direction.value,
+                                    reason_code="signal_persisted", created_ts_ms=snapshot.as_of_ts_ms,
+                                    confidence=item.confidence)
                 reason="signal_persisted" if item is candidate else "consensus_contributor_to_persisted_signal"
                 self._log_candidate(item,grade=grade_label,veto="PASS",reason=reason,stage="accepted")
             news_label="clear" if not news_state.active_for(symbol) else "events available"
             self.outbox.put_nowait((signal,DeliveryContext(news_label,"connected",snapshot.as_of_ts_ms)))
+            self._record_funnel(stage="QUEUE_ACCEPTED", strategy=signal.strategy_source,
+                                symbol=signal.symbol, direction=signal.direction,
+                                reason_code="outbox_enqueued", created_ts_ms=signal.created_ts_ms,
+                                confidence=signal.confidence)
             self.enqueued_count+=1
             await self.outbox.join()  # serialize risk reservations before evaluating the next candidate
 
