@@ -125,11 +125,11 @@ class S2VolatilityCompression(StrategyBase):
             as_of_ts_ms=snapshot.as_of_ts_ms,
             staleness_budget_ms=cfg["oi_stale_ms"],
         ):
-            return self._skip(snapshot, "):")
+            return self._skip(snapshot, "oi_data_stale")
         oi_now = oi_series_5m[-1].value
         oi_prior = oi_series_5m[-2].value
         if oi_prior == 0:
-            return self._skip(snapshot, "if oi_prior == 0:")
+            return self._skip(snapshot, "oi_prior_zero")
         oi_delta_pct = (oi_now - oi_prior) / oi_prior * 100
 
         current = bars_5m[i]
