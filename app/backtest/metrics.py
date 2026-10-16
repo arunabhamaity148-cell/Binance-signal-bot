@@ -38,6 +38,14 @@ class TradeResult:
     regime_label: str  # caller-defined regime bucket (e.g. "trending" / "ranging")
     opened_ts_ms: int
     closed_ts_ms: int
+    time_to_entry_zone_ms: int | None = None
+    time_to_tp1_ms: int | None = None
+    time_to_tp2_ms: int | None = None
+    time_to_sl_ms: int | None = None
+    expiry_without_touch: bool = False
+    outcome: str = "CLOSED"
+    reference_path: str = "BINANCE_REFERENCE"
+    operator_reported: bool = False
 
 
 @dataclass(frozen=True)
@@ -59,6 +67,21 @@ class MetricsReport:
     avg_mfe_r: float
     avg_mae_r: float
     regime_breakdown: dict[str, "MetricsReport"]  # recursive, built without the breakdown itself
+    signal_precision: float = 0.0
+    expiry_without_touch_count: int = 0
+    avg_time_to_entry_zone_ms: float = 0.0
+    avg_time_to_tp1_ms: float = 0.0
+    avg_time_to_tp2_ms: float = 0.0
+    avg_time_to_sl_ms: float = 0.0
+
+
+def split_reference_and_operator_results(
+    trades: list[TradeResult],
+) -> tuple[list[TradeResult], list[TradeResult]]:
+    """Return (Binance reference, operator-reported) without merging metrics."""
+    reference = [t for t in trades if t.reference_path == "BINANCE_REFERENCE" and not t.operator_reported]
+    operator = [t for t in trades if t.operator_reported or t.reference_path != "BINANCE_REFERENCE"]
+    return reference, operator
 
 
 def _filled_trades(trades: list[TradeResult]) -> list[TradeResult]:
@@ -69,6 +92,20 @@ def compute_fill_rate(trades: list[TradeResult]) -> float:
     if not trades:
         return 0.0
     return len(_filled_trades(trades)) / len(trades)
+
+
+def compute_signal_precision(trades: list[TradeResult]) -> float:
+    """Fraction of generated signals that obtained a modeled entry fill."""
+    return compute_fill_rate(trades)
+
+
+def compute_expiry_without_touch_count(trades: list[TradeResult]) -> int:
+    return sum(1 for t in trades if t.expiry_without_touch)
+
+
+def _average_optional_ms(trades: list[TradeResult], field: str) -> float:
+    values = [getattr(t, field) for t in _filled_trades(trades) if getattr(t, field) is not None]
+    return sum(values) / len(values) if values else 0.0
 
 
 def compute_win_rate(trades: list[TradeResult]) -> float:
@@ -260,4 +297,10 @@ def compute_metrics(trades: list[TradeResult], *, include_regime_breakdown: bool
         avg_mfe_r=compute_avg_mfe_r(trades),
         avg_mae_r=compute_avg_mae_r(trades),
         regime_breakdown=regime_breakdown,
+        signal_precision=compute_signal_precision(trades),
+        expiry_without_touch_count=compute_expiry_without_touch_count(trades),
+        avg_time_to_entry_zone_ms=_average_optional_ms(trades, "time_to_entry_zone_ms"),
+        avg_time_to_tp1_ms=_average_optional_ms(trades, "time_to_tp1_ms"),
+        avg_time_to_tp2_ms=_average_optional_ms(trades, "time_to_tp2_ms"),
+        avg_time_to_sl_ms=_average_optional_ms(trades, "time_to_sl_ms"),
     )

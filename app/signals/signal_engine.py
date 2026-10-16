@@ -21,6 +21,7 @@ from app.core.time_utils import minutes_to_ms, utc_date_str
 from app.signals.expiry import compute_expiry_ts_ms
 from app.signals.models import Signal, build_signal
 from app.signals.tpsl import compute_rr_at_tp, estimate_cost
+from app.signals.structure_tp_sl import StructurePolicyConfig, apply_structure_aware_policy
 
 
 def generate_signal_id(created_ts_ms: int) -> str:
@@ -47,6 +48,8 @@ def build_final_signal(
     management_horizon_minutes: float | None = None,
     time_stop_minutes: int = 60,
     partial_exit_fractions: tuple[float, float, float, float] = (0.40, 0.30, 0.20, 0.10),
+    structure_aware_tpsl_mode: str = "off",
+    structure_policy_config: StructurePolicyConfig | None = None,
 ) -> Signal:
     """Construct the final Signal from all upstream computation.
 
@@ -72,13 +75,24 @@ def build_final_signal(
     # prices; the Signal validator would otherwise reject perfectly
     # sound strategy output purely for tick-grid noise.
     tick = snapshot.price_tick
-    entry_low = round_to_tick(candidate.entry_low, tick)
-    entry_high = round_to_tick(candidate.entry_high, tick)
-    stop_loss = round_to_tick(candidate.stop_loss, tick)
-    tp1 = round_to_tick(candidate.tp1, tick)
-    tp2 = round_to_tick(candidate.tp2, tick)
-    tp3 = round_to_tick(candidate.tp3, tick)
-    tp4 = round_to_tick(candidate.tp4, tick)
+    if structure_aware_tpsl_mode not in {"off", "shadow", "enabled"}:
+        raise ValueError("structure_aware_tpsl_mode must be off, shadow, or enabled")
+    shadow_policy = None
+    if structure_aware_tpsl_mode != "off":
+        shadow_policy = apply_structure_aware_policy(
+            candidate=candidate, snapshot=snapshot,
+            config=structure_policy_config or StructurePolicyConfig(),
+        )
+        if structure_aware_tpsl_mode == "enabled" and not shadow_policy.accepted:
+            raise ValueError(f"structure-aware TP/SL rejected signal: {shadow_policy.reason}")
+    policy = shadow_policy if structure_aware_tpsl_mode == "enabled" and shadow_policy and shadow_policy.accepted else None
+    entry_low = round_to_tick(policy.entry_low if policy else candidate.entry_low, tick)
+    entry_high = round_to_tick(policy.entry_high if policy else candidate.entry_high, tick)
+    stop_loss = round_to_tick(policy.stop_loss if policy else candidate.stop_loss, tick)
+    tp1 = round_to_tick(policy.tp1 if policy else candidate.tp1, tick)
+    tp2 = round_to_tick(policy.tp2 if policy else candidate.tp2, tick)
+    tp3 = round_to_tick(policy.tp3 if policy else candidate.tp3, tick)
+    tp4 = round_to_tick(policy.tp4 if policy else candidate.tp4, tick)
 
     # entry_price is the entry-zone MIDPOINT, matching the R convention
     # every strategy uses (see app/strategies/base.py docstring): R and
@@ -130,6 +144,20 @@ def build_final_signal(
     merged_meta["management_horizon_minutes"] = management_minutes
     merged_meta["time_stop_minutes"] = effective_time_stop_minutes
     merged_meta["partial_exit_fractions"] = list(partial_exit_fractions)
+    merged_meta["structure_aware_tpsl_mode"] = structure_aware_tpsl_mode
+    if shadow_policy is not None:
+        merged_meta["structure_aware_shadow"] = {
+            "accepted": shadow_policy.accepted,
+            "reason": shadow_policy.reason,
+            "source": shadow_policy.source,
+            "entry_low": shadow_policy.entry_low,
+            "entry_high": shadow_policy.entry_high,
+            "stop_loss": shadow_policy.stop_loss,
+            "tp1": shadow_policy.tp1,
+            "tp2": shadow_policy.tp2,
+            "tp3": shadow_policy.tp3,
+            "tp4": shadow_policy.tp4,
+        }
     merged_meta["guard_results"] = [
         {
             "guard_name": g.guard_name,

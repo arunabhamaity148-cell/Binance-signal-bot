@@ -33,7 +33,9 @@ from app.news.engine import NewsEngine, run_collection_cycle
 from app.risk.risk_engine import (CandidateDeduplicator, DailyCounters, OpenSignalRecord, RiskState,
     apply_min_rr_gate, check_risk_limits, combined_sizing_multiplier, compute_position_size)
 from app.risk.veto_engine import run_veto_engine
+from app.monitoring.diagnostics import funnel as diagnostic_funnel
 from app.monitoring.diagnostics import strategy as diagnostic_strategy
+from app.monitoring.metrics import RuntimeMetrics
 from app.risk.btc_regime import compute_btc_trend_direction
 from app.risk.regime_detector import MarketRegime, detect_regime
 from app.signals.signal_engine import build_final_signal
@@ -412,13 +414,25 @@ class SignalBot:
         self.sender=sender; self.telegram_queue=None; self.cache=None; self.symbols=[]
         self.news_engine=None; self.news_collector=None; self.news_sources=[]; self.news_task=None
         self.error_notifier=None; self.report_task=None; self.hourly_summary_task=None; self.command_task=None
-        self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None
+        self.stop_event=None; self.outbox=asyncio.Queue(); self.outbox_task=None; self.oi_task=None; self.derivatives_task=None; self.lifecycle_task=None
         self.delta_client=None; self.delta_products={}; self.delta_task=None
         self.enqueued_count=0; self._closed=False; self._close_lock=asyncio.Lock(); self._candidate_dedup=CandidateDeduplicator()
         self._cycle_candidates=0; self._cycle_signals=0
         self._boot_started_monotonic=time.monotonic(); self._snapshot_diagnostics={}
         self._unknown_regime_since: dict[str, float] = {}
         self._unknown_regime_error_logged: set[str] = set()
+        self.runtime_metrics = RuntimeMetrics()
+
+    def _record_funnel(self, *, stage: str, strategy: str | None = None,
+                       symbol: str | None = None, direction: str | None = None,
+                       reason_code: str = "unspecified", created_ts_ms: int | None = None,
+                       regime: str | None = None, confidence: float | None = None,
+                       veto_name: str | None = None, threshold=None, values=None) -> None:
+        self.runtime_metrics.record_funnel(stage=stage, strategy=strategy, reason_code=reason_code)
+        diagnostic_funnel(stage=stage, strategy=strategy, symbol=symbol, direction=direction,
+                          reason_code=reason_code, created_ts_ms=created_ts_ms, regime=regime,
+                          confidence=confidence, veto_name=veto_name, threshold=threshold,
+                          values=values)
 
     def _track_regime_status(self, symbol: str, regime: MarketRegime) -> float | None:
         """Track continuous UNKNOWN duration and surface persistent failures."""
@@ -672,10 +686,38 @@ class SignalBot:
             try:
                 if item is _STOP: return
                 signal,ctx=item
+                self._record_funnel(stage="TELEGRAM_ATTEMPTED", strategy=signal.strategy_source,
+                                    symbol=signal.symbol, direction=signal.direction,
+                                    reason_code="telegram_delivery_attempted", created_ts_ms=signal.created_ts_ms,
+                                    confidence=signal.confidence)
                 result=await self.sender.send_signal_message(signal,ctx)
-                if result.outcome==SendOutcome.SENT:
-                    await self.repo.update_lifecycle_state(signal.signal_id,"PENDING","PUBLISHED",now_ms(),"queued to Telegram (dry-run or delivery accepted)")
-                else: logger.warning("signal remains PENDING after Telegram refusal/failure",extra={"context":{"signal_id":signal.signal_id,"outcome":result.outcome.value,"detail":result.detail}})
+                record_delivery = getattr(self.repo, "record_telegram_delivery", None)
+                if callable(record_delivery):
+                    await record_delivery(
+                        signal_id=signal.signal_id, attempted_ts_ms=now_ms(),
+                        outcome=result.outcome.value, dry_run=bool(result.dry_run),
+                        http_status=result.http_status, telegram_ok=result.telegram_ok,
+                        message_id=result.message_id, detail=result.detail,
+                    )
+                api_accepted = result.outcome == SendOutcome.SENT and (
+                    result.dry_run is None or (result.dry_run is False and result.telegram_ok is True)
+                )
+                if api_accepted:
+                    self._record_funnel(stage="TELEGRAM_OK", strategy=signal.strategy_source,
+                                        symbol=signal.symbol, direction=signal.direction,
+                                        reason_code="telegram_ok", created_ts_ms=signal.created_ts_ms,
+                                        confidence=signal.confidence)
+                    reason = "Telegram API ok=true" if result.telegram_ok is True else "delivery accepted by compatible sender"
+                    await self.repo.update_lifecycle_state(signal.signal_id,"PENDING","PUBLISHED",now_ms(),reason)
+                elif result.outcome == SendOutcome.SENT and result.dry_run:
+                    logger.info("dry-run Telegram delivery recorded; signal remains PENDING",
+                                extra={"context":{"signal_id":signal.signal_id,"outcome":result.outcome.value}})
+                else:
+                    self._record_funnel(stage="TELEGRAM_FAILED", strategy=signal.strategy_source,
+                                        symbol=signal.symbol, direction=signal.direction,
+                                        reason_code="telegram_failed", created_ts_ms=signal.created_ts_ms,
+                                        confidence=signal.confidence)
+                    logger.warning("signal remains PENDING after Telegram refusal/failure",extra={"context":{"signal_id":signal.signal_id,"outcome":result.outcome.value,"detail":result.detail}})
             except Exception:
                 logger.exception("telegram outbox item failed")
             finally: self.outbox.task_done()
@@ -697,6 +739,17 @@ class SignalBot:
                 logger.info("deriv_refresh_completed",extra={"context":{"cycle":cycle,"succeeded":True,"failed":False}})
             except Exception:
                 logger.exception("deriv_refresh_completed",extra={"context":{"cycle":cycle,"succeeded":False,"failed":True}})
+            try: await asyncio.wait_for(self.stop_event.wait(), timeout=interval_s)
+            except asyncio.TimeoutError: pass
+
+    async def _lifecycle_expiry_loop(self, interval_s: float = 30.0):
+        while not self.stop_event.is_set():
+            try:
+                advance = getattr(self.repo, "advance_expiry", None)
+                if callable(advance):
+                    await advance(now_ts_ms=now_ms())
+            except Exception:
+                logger.exception("signal lifecycle expiry maintenance failed")
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=interval_s)
             except asyncio.TimeoutError: pass
 
@@ -766,7 +819,13 @@ class SignalBot:
             )
             if regime == MarketRegime.UNKNOWN:
                 for strategy_name in ("S1", "S2", "S3", "S4", "S5"):
-                    diagnostic_strategy(snapshot.symbol, strategy_name, "skipped", "regime_unknown", {"regime": "UNKNOWN"})
+                    diagnostic_strategy(
+                        snapshot.symbol,
+                        strategy_name,
+                        "skipped",
+                        "regime_unknown",
+                        {"regime": "UNKNOWN"},
+                    )
                 return
         try:
             if regime is None:
@@ -774,9 +833,6 @@ class SignalBot:
             else:
                 candidates=generate_candidates_at_snapshot(
                     snapshot, news_state, self.cfg.strategy, regime=regime,
-                    regime_logger=lambda strategy_name, regime_name: diagnostic_strategy(
-                        snapshot.symbol, strategy_name, "skipped", "regime_not_allowed", {"regime": regime_name}
-                    ),
                 )
         except Exception as exc:
             logger.info("strategy_eval",extra={"context":{"symbol":getattr(snapshot,"symbol","UNKNOWN"),
@@ -795,8 +851,16 @@ class SignalBot:
                         "ts_ms": int(snapshot.as_of_ts_ms),
                     }},
                 )
-        candidates=[c for c in pending_candidates if not self._candidate_dedup.should_suppress(
-            c, now_ts_ms=snapshot.as_of_ts_ms, cooldown_min=self.cfg.risk["cooldown_min"])]
+        candidates=[]
+        for c in pending_candidates:
+            if self._candidate_dedup.should_suppress(
+                c, now_ts_ms=snapshot.as_of_ts_ms, cooldown_min=self.cfg.risk["cooldown_min"]):
+                self._record_funnel(stage="DEDUPLICATED", strategy=c.strategy_source,
+                                    symbol=c.symbol, direction=c.direction.value,
+                                    reason_code="duplicate_candidate", created_ts_ms=snapshot.as_of_ts_ms,
+                                    confidence=c.confidence)
+                continue
+            candidates.append(c)
         counts=Counter(c.strategy_source for c in candidates)
         log_symbol=getattr(snapshot,"symbol",None) or (candidates[0].symbol if candidates else "UNKNOWN")
         for strategy_name in ("S1", "S2", "S3", "S4", "S5"):
@@ -808,6 +872,10 @@ class SignalBot:
         for c in candidates:
             await self.repo.insert_candidate_audit(symbol=c.symbol,strategy_source=c.strategy_source,direction=c.direction.value,
                 confidence=c.confidence,event_ts_ms=c.event_ts_ms,snapshot_version=snapshot.snapshot_version,meta=c.meta)
+            self._record_funnel(stage="CANDIDATE_CREATED", strategy=c.strategy_source,
+                                symbol=c.symbol, direction=c.direction.value,
+                                reason_code="candidate_created", created_ts_ms=c.event_ts_ms,
+                                confidence=c.confidence)
             self._log_candidate(c,grade="UNASSESSED",veto="NOT_RUN",reason="created",stage="created")
             logger.info(
                 "candidate_created",
@@ -825,6 +893,10 @@ class SignalBot:
             grade_label=getattr(grade,"value",grade) if grade is not None else "NONE"
             if grade is None:
                 for item in group:
+                    self._record_funnel(stage="CONSENSUS_REJECTED", strategy=item.strategy_source,
+                                        symbol=item.symbol, direction=item.direction.value,
+                                        reason_code="no_grade_threshold_met", created_ts_ms=item.event_ts_ms,
+                                        confidence=item.confidence)
                     self._log_candidate(item,grade=grade_label,veto="NOT_RUN",reason="consensus_grade_missing",stage="rejected")
                 continue
             candidate=group[0]
@@ -835,6 +907,10 @@ class SignalBot:
                 reason=veto.veto_reason or "; ".join(r.reason or r.guard_name for r in veto.guard_results
                     if not r.passed and r.action==GuardAction.BLOCK) or "veto_blocked"
                 for item in group:
+                    self._record_funnel(stage="VETO_BLOCKED", strategy=item.strategy_source,
+                                        symbol=item.symbol, direction=item.direction.value,
+                                        reason_code="veto_blocked", created_ts_ms=snapshot.as_of_ts_ms,
+                                        confidence=item.confidence, veto_name=reason.split(":", 1)[0])
                     self._log_candidate(item,grade=grade_label,veto="BLOCK",reason=reason,stage="rejected")
                 for result in veto.guard_results:
                     if not result.passed and result.action == GuardAction.BLOCK:
@@ -876,7 +952,8 @@ class SignalBot:
                 entry_expiry_minutes=self.cfg.risk.get("entry_expiry_minutes", 30),
                 management_horizon_minutes=self.cfg.risk.get("management_horizon_minutes"),
                 time_stop_minutes=self.cfg.risk.get("time_stop_minutes", 60),
-                partial_exit_fractions=tuple(self.cfg.risk.get("partial_exit_fractions", [0.40, 0.30, 0.20, 0.10])))
+                partial_exit_fractions=tuple(self.cfg.risk.get("partial_exit_fractions", [0.40, 0.30, 0.20, 0.10])),
+                structure_aware_tpsl_mode=self.cfg.risk.get("structure_aware_tpsl_mode", "off"))
             signal=self._populate_delta_fields(signal)
             if signal.veto_state!="PASS":
                 for item in group:
@@ -888,17 +965,27 @@ class SignalBot:
                 continue
             await self.repo.insert_signal(signal)
             self._cycle_signals+=1
+            self.runtime_metrics.record_signal(grade=grade_label, strategy=candidate.strategy_source, symbol=symbol)
             for item in group:
+                self._record_funnel(stage="PERSISTED", strategy=item.strategy_source,
+                                    symbol=item.symbol, direction=item.direction.value,
+                                    reason_code="signal_persisted", created_ts_ms=snapshot.as_of_ts_ms,
+                                    confidence=item.confidence)
                 reason="signal_persisted" if item is candidate else "consensus_contributor_to_persisted_signal"
                 self._log_candidate(item,grade=grade_label,veto="PASS",reason=reason,stage="accepted")
             news_label="clear" if not news_state.active_for(symbol) else "events available"
             self.outbox.put_nowait((signal,DeliveryContext(news_label,"connected",snapshot.as_of_ts_ms)))
+            self._record_funnel(stage="QUEUE_ACCEPTED", strategy=signal.strategy_source,
+                                symbol=signal.symbol, direction=signal.direction,
+                                reason_code="outbox_enqueued", created_ts_ms=signal.created_ts_ms,
+                                confidence=signal.confidence)
             self.enqueued_count+=1
             await self.outbox.join()  # serialize risk reservations before evaluating the next candidate
 
     async def run(self,stop_event=None):
         self.stop_event=stop_event or self.stop_event or asyncio.Event()
         self.outbox_task=asyncio.create_task(self._publisher_loop(),name="telegram-outbox")
+        self.lifecycle_task=asyncio.create_task(self._lifecycle_expiry_loop(),name="signal-lifecycle-expiry")
         self.oi_task=asyncio.create_task(self._refresh_oi_loop(),name="live-oi-poller")
         self.derivatives_task=asyncio.create_task(self._refresh_derivatives_history_loop(),name="historical-derivatives-refresh")
         if self.delta_client is not None:
@@ -946,9 +1033,9 @@ class SignalBot:
             if self._closed: return
             self._closed=True
             if self.stop_event: self.stop_event.set()
-            for task in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None):
+            for task in (self.news_task,self.oi_task,self.derivatives_task,self.lifecycle_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None):
                 if task and not task.done(): task.cancel()
-            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
+            await asyncio.gather(*(t for t in (self.news_task,self.oi_task,self.derivatives_task,self.lifecycle_task,self.delta_task,self.report_task,self.hourly_summary_task,self.command_task,self.cache.ws_task if self.cache else None) if t),return_exceptions=True)
             if self.outbox_task and not self.outbox_task.done():
                 await self.outbox.join(); self.outbox.put_nowait(_STOP); await self.outbox.join(); await self.outbox_task
             if self.error_notifier is not None:

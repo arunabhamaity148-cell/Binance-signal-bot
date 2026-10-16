@@ -119,6 +119,47 @@ _MIGRATIONS: list[tuple[int, str]] = [
             ON runtime_events(guard_name, created_ts_ms);
         """,
     ),
+    (
+        4,
+        """
+        CREATE TABLE IF NOT EXISTS telegram_delivery_events (
+            event_id TEXT PRIMARY KEY NOT NULL,
+            signal_id TEXT NOT NULL,
+            attempted_ts_ms INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            dry_run INTEGER NOT NULL CHECK (dry_run IN (0,1)),
+            http_status INTEGER,
+            telegram_ok INTEGER CHECK (telegram_ok IN (0,1) OR telegram_ok IS NULL),
+            message_id TEXT,
+            detail TEXT,
+            FOREIGN KEY (signal_id) REFERENCES signals(signal_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_telegram_delivery_signal_ts
+            ON telegram_delivery_events(signal_id, attempted_ts_ms);
+        CREATE TABLE IF NOT EXISTS signal_timing (
+            signal_id TEXT PRIMARY KEY NOT NULL,
+            entry_expiry_ts_ms INTEGER,
+            management_expiry_ts_ms INTEGER NOT NULL,
+            management_horizon_minutes INTEGER NOT NULL,
+            time_stop_minutes INTEGER NOT NULL,
+            partial_exit_fractions_json TEXT NOT NULL,
+            FOREIGN KEY (signal_id) REFERENCES signals(signal_id)
+        );
+        CREATE TABLE IF NOT EXISTS operator_signal_events (
+            event_id TEXT PRIMARY KEY NOT NULL,
+            signal_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('FILLED_REPORTED','CLOSED_REPORTED')),
+            event_ts_ms INTEGER NOT NULL,
+            price REAL,
+            realized_r REAL,
+            note TEXT,
+            provenance TEXT NOT NULL CHECK (provenance = 'manual'),
+            FOREIGN KEY (signal_id) REFERENCES signals(signal_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_operator_signal_events_signal_ts
+            ON operator_signal_events(signal_id, event_ts_ms);
+        """,
+    ),
 ]
 
 

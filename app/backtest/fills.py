@@ -123,6 +123,7 @@ class PartialExitEvent:
     price: float
     fraction_of_original: float
     bar_close_time_ms: int
+    exit_kind: str = "TP"
 
 
 @dataclass
@@ -141,6 +142,8 @@ class PositionState:
     exits: list[PartialExitEvent] = None  # type: ignore[assignment]
     stopped_out: bool = False
     stop_out_bar_close_time_ms: int | None = None
+    max_favorable_price: float | None = None
+    max_adverse_price: float | None = None
 
     def __post_init__(self) -> None:
         if self.exits is None:
@@ -188,6 +191,13 @@ def process_bar_for_open_position(position: PositionState, bar: OHLC) -> Positio
     if position.is_fully_closed:
         return position
 
+    if position.direction == Direction.LONG:
+        position.max_favorable_price = max(bar.high, position.max_favorable_price or position.entry_price)
+        position.max_adverse_price = min(bar.low, position.max_adverse_price or position.entry_price)
+    else:
+        position.max_favorable_price = min(bar.low, position.max_favorable_price or position.entry_price)
+        position.max_adverse_price = max(bar.high, position.max_adverse_price or position.entry_price)
+
     if _sl_hit(position.direction, position.stop_loss, bar):
         position.stopped_out = True
         position.stop_out_bar_close_time_ms = bar.close_time_ms
@@ -206,4 +216,19 @@ def process_bar_for_open_position(position: PositionState, bar: OHLC) -> Positio
             position.remaining_fraction -= fraction
             position.next_tp_index += 1
 
+    return position
+
+
+def force_close_position(
+    position: PositionState, *, price: float, bar_close_time_ms: int,
+    exit_kind: str = "TIME_STOP",
+) -> PositionState:
+    """Close the remaining fraction at an explicit market-style valuation."""
+    if position.is_fully_closed:
+        return position
+    position.exits.append(PartialExitEvent(
+        tp_index=-1, price=price, fraction_of_original=position.remaining_fraction,
+        bar_close_time_ms=bar_close_time_ms, exit_kind=exit_kind,
+    ))
+    position.remaining_fraction = 0.0
     return position

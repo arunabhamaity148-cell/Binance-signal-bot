@@ -9,7 +9,7 @@ class RuntimeMetrics:
     def __init__(self) -> None:
         self._lock=Lock()
         self._counters={"signals_emitted":0,"vetoes_blocked":0,"signals_per_grade":{},
-                        "signals_per_strategy":{},"signals_per_symbol":{}}
+                        "signals_per_strategy":{},"signals_per_symbol":{},"funnel":{}}
         self._gauges={"current_feed_lag_ms":None,"current_ws_reconnect_count":None,"active_signal_count":0}
 
     @staticmethod
@@ -22,6 +22,19 @@ class RuntimeMetrics:
             self._inc(self._counters["signals_per_grade"],str(grade))
             self._inc(self._counters["signals_per_strategy"],str(strategy))
             self._inc(self._counters["signals_per_symbol"],str(symbol))
+
+    def record_funnel(self, *, stage: str, strategy: str | None = None,
+                      reason_code: str | None = None, amount: int = 1) -> None:
+        """Increment bounded stage/strategy/reason counters; no per-event storage."""
+        stage_key = str(stage).upper()
+        reason_key = str(reason_code or "unspecified")
+        with self._lock:
+            funnel = self._counters["funnel"]
+            self._inc(funnel, stage_key, amount)
+            if strategy:
+                by_strategy = funnel.setdefault("by_strategy", {})
+                self._inc(by_strategy.setdefault(str(strategy), {}), stage_key, amount)
+            self._inc(funnel.setdefault("by_reason", {}), reason_key, amount)
 
     def record_veto(self, *, blocked: bool=True, amount: int=1) -> None:
         if not blocked: return

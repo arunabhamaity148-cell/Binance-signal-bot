@@ -49,6 +49,7 @@ from abc import ABC, abstractmethod
 
 from app.core.logging import get_logger
 from app.core.models import CandidateSignal, MarketSnapshot, NewsState
+from app.monitoring.diagnostics import funnel as diagnostic_funnel
 
 logger = get_logger(__name__)
 
@@ -149,6 +150,10 @@ class StrategyBase(ABC):
         out: list[CandidateSignal] = []
         for candidate in candidates:
             if not passes_min_stop_cost_multiple(candidate, snapshot, stop_cost_multiple):
+                diagnostic_funnel(stage="FINALIZE_REJECTED", strategy=candidate.strategy_source,
+                                  symbol=candidate.symbol, direction=candidate.direction.value,
+                                  reason_code="min_stop_cost_multiple", created_ts_ms=snapshot.as_of_ts_ms,
+                                  confidence=candidate.confidence, threshold=stop_cost_multiple)
                 logger.info(
                     "candidate_filtered_finalize",
                     extra={"context": {
@@ -159,6 +164,10 @@ class StrategyBase(ABC):
                 )
                 continue
             if not passes_max_entry_zone_width(candidate, width_multiple):
+                diagnostic_funnel(stage="FINALIZE_REJECTED", strategy=candidate.strategy_source,
+                                  symbol=candidate.symbol, direction=candidate.direction.value,
+                                  reason_code="max_entry_zone_width", created_ts_ms=snapshot.as_of_ts_ms,
+                                  confidence=candidate.confidence, threshold=width_multiple)
                 logger.info(
                     "candidate_filtered_finalize",
                     extra={"context": {
