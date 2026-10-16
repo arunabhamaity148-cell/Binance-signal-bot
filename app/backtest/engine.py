@@ -148,9 +148,10 @@ def generate_candidates_at_snapshot(
         allowed = section.get("allowed_regimes")
         regime_name = getattr(regime, "value", regime)
         if regime_name is not None and regime_name not in (allowed or ()):
-            diagnostic_strategy(getattr(snapshot, "symbol", "UNKNOWN"), strategy.strategy_id, "skipped", "regime_not_allowed", {"regime": regime_name})
             if regime_logger is not None:
                 regime_logger(strategy.strategy_id, regime_name)
+            else:
+                diagnostic_strategy(getattr(snapshot, "symbol", "UNKNOWN"), strategy.strategy_id, "skipped", "regime_not_allowed", {"regime": regime_name})
             continue
         candidates.extend(strategy.evaluate(snapshot, news_state, strategy_cfg))
     return candidates
