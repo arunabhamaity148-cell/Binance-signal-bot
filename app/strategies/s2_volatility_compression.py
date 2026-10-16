@@ -125,14 +125,10 @@ class S2VolatilityCompression(StrategyBase):
             as_of_ts_ms=snapshot.as_of_ts_ms,
             staleness_budget_ms=cfg["oi_stale_ms"],
         ):
-            from app.monitoring.diagnostics import strategy as diagnostic_strategy
-            diagnostic_strategy(snapshot.symbol, "S2", "rejected", "oi_data_stale")
             return self._skip(snapshot, "):")
         oi_now = oi_series_5m[-1].value
         oi_prior = oi_series_5m[-2].value
         if oi_prior == 0:
-            from app.monitoring.diagnostics import strategy as diagnostic_strategy
-            diagnostic_strategy(snapshot.symbol, "S2", "rejected", "oi_prior_zero")
             return self._skip(snapshot, "if oi_prior == 0:")
         oi_delta_pct = (oi_now - oi_prior) / oi_prior * 100
 

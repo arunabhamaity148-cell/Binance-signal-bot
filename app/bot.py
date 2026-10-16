@@ -766,7 +766,8 @@ class SignalBot:
             )
             if regime == MarketRegime.UNKNOWN:
                 for strategy_name in ("S1", "S2", "S3", "S4", "S5"):
-                    diagnostic_strategy(snapshot.symbol, strategy_name, "skipped", "regime_unknown", {"regime": "UNKNOWN"})
+                    logger.info("strategy_skipped_by_regime | symbol=%s | strategy=%s | regime=UNKNOWN",
+                                snapshot.symbol, strategy_name)
                 return
         try:
             if regime is None:
@@ -774,8 +775,9 @@ class SignalBot:
             else:
                 candidates=generate_candidates_at_snapshot(
                     snapshot, news_state, self.cfg.strategy, regime=regime,
-                    regime_logger=lambda strategy_name, regime_name: diagnostic_strategy(
-                        snapshot.symbol, strategy_name, "skipped", "regime_not_allowed", {"regime": regime_name}
+                    regime_logger=lambda strategy_name, regime_name: logger.info(
+                        "strategy_skipped_by_regime | symbol=%s | strategy=%s | regime=%s",
+                        snapshot.symbol, strategy_name, regime_name,
                     ),
                 )
         except Exception as exc:
